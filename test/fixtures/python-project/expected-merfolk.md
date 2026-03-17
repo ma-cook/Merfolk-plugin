@@ -1,0 +1,3 @@
+<!-- Expected Merfolk output for python fixture -->
+<!-- This file will be populated once the generator is implemented -->
+<!-- Tests will compare generated output against this file -->

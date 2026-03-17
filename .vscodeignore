@@ -1,0 +1,7 @@
+test/
+fixtures/
+src/
+*.ts
+!out/**
+.vscode/
+node_modules/

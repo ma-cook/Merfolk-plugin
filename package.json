@@ -1,0 +1,36 @@
+{
+  "name": "merfolk-plugin",
+  "displayName": "Merfolk Plugin",
+  "description": "Scan a VS Code workspace and generate a merfolk.md diagram",
+  "version": "0.0.1",
+  "publisher": "ma-cook",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "merfolk.generate",
+        "title": "Generate Merfolk Diagram"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.23.6"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.3.8",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  }
+}
