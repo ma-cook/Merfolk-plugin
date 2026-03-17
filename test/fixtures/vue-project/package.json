@@ -1,0 +1,8 @@
+{
+  "name": "vue-project",
+  "version": "1.0.0",
+  "dependencies": {
+    "vue": "^3.4.0",
+    "pinia": "^2.1.7"
+  }
+}
