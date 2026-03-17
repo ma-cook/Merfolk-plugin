@@ -22,7 +22,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "package": "vsce package"
+    "package": "npx vsce package"
   },
   "dependencies": {
     "@babel/parser": "^7.23.6"
@@ -30,6 +30,7 @@
   "devDependencies": {
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^2.3.8",
+    "@vscode/vsce": "^2.22.0",
     "typescript": "^5.3.3",
     "vitest": "^1.2.0"
   }
