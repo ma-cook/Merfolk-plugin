@@ -81,7 +81,7 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('[Hook: useAuth]');
   });
 
-  it('creates dashed arrows for containment (-.->)', () => {
+  it('creates dashed arrows for containment (-.->) ', () => {
     const result = generateMerfolkMarkdown(
       makeElements({ components: ['App'], hooks: ['useAuth'] }),
       'repo',
