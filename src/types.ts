@@ -87,6 +87,9 @@ export interface Elements {
   fileContainers: Map<string, FileContainerInfo>; // key = filePath
   internalHelperComponents: InternalHelperComponent[];
   rawCallSites: RawCallSite[];                     // per-call-site (NOT deduplicated)
+  storeUsageRelationships: Map<string, Map<string, StoreUsageInfo>>; // component -> store -> {properties, actions}
+  hookReturnValueRelationships: Map<string, HookReturnValueInfo[]>;  // component -> hook return info
+  moduleImportRelationships: Map<string, Set<string>>;               // sourceFile -> Set<importedFileBasename>
 }
 
 // Track what's already found to avoid duplicates
