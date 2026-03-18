@@ -19,6 +19,11 @@ function formatProps(props: string[]): string {
   return `${props.slice(0, 3).join(', ')}...`;
 }
 
+/** Extract the filename stem (no directory, no extension) from a file path. */
+function getFileStem(filePath: string): string {
+  return filePath.replace(/\\/g, '/').split('/').pop()?.replace(/\.[^.]+$/, '') ?? '';
+}
+
 export function generateMerfolkMarkdown(
   elements: Elements,
   repoName: string,
@@ -114,20 +119,20 @@ export function generateMerfolkMarkdown(
     lines.push('');
   }
 
-  // %% Hooks — use [Function: name] syntax (same as volscape reference)
+  // %% Hooks
   if (hooks.length > 0) {
     lines.push('%% Hooks');
     for (const hook of hooks) {
-      lines.push(`${hook}[Function: ${hook}]`);
+      lines.push(`${hook}[Hook: ${hook}]`);
     }
     lines.push('');
   }
 
-  // %% Services — use [Function: name] syntax (same as volscape reference)
+  // %% Services
   if (services.length > 0) {
     lines.push('%% Services');
     for (const svc of services) {
-      lines.push(`${svc}[Function: ${svc}]`);
+      lines.push(`${svc}((Service: ${svc}))`);
     }
     lines.push('');
   }
@@ -246,12 +251,24 @@ export function generateMerfolkMarkdown(
   // Each call site is emitted as-is (no deduplication) with a two-line chain
   // for non-store targets: Caller --> container : label + container --> target : "receives"
   const compDeps = elements.componentDependencies ?? [];
+  const hookReturnValueRels = elements.hookReturnValueRelationships ?? new Map<string, { hook: string; returnValues: string[] }[]>();
   const depLines: string[] = [];
   for (const dep of compDeps) {
     if (!componentSet.has(dep.component)) continue;
     // Resolve to file container if available
     const resolvedTarget = funcToContainerNodeId.get(dep.target) ?? dep.target;
-    depLines.push(`${dep.component} --> ${resolvedTarget} : "${dep.label}"`);
+    // Enhance label using hookReturnValueRelationships when dep label is generic
+    let label = dep.label;
+    if (label === 'uses hook') {
+      const hookRVs = hookReturnValueRels.get(dep.component);
+      if (hookRVs) {
+        const hookInfo = hookRVs.find(h => h.hook === dep.target);
+        if (hookInfo && hookInfo.returnValues.length > 0) {
+          label = `{${hookInfo.returnValues.join(', ')}}`;
+        }
+      }
+    }
+    depLines.push(`${dep.component} --> ${resolvedTarget} : "${label}"`);
     // Add "receives" line for non-store targets (two-line chain pattern)
     if (!storeSet.has(dep.target) && !storeSet.has(resolvedTarget)) {
       depLines.push(`${resolvedTarget} --> ${dep.target} : "receives"`);
@@ -287,6 +304,42 @@ export function generateMerfolkMarkdown(
     lines.push('%% Function Call Relationships');
     lines.push(...callRelLines);
     lines.push('');
+  }
+
+  // %% Store Usage Details
+  const storeUsage = elements.storeUsageRelationships ?? new Map<string, Map<string, { properties: Set<string>; actions: Set<string> }>>();
+  const storeUsageLines: string[] = [];
+  for (const [comp, storeMap] of storeUsage) {
+    if (!componentSet.has(comp)) continue;
+    for (const [store, info] of storeMap) {
+      const parts = [...info.properties, ...info.actions];
+      if (parts.length > 0) {
+        storeUsageLines.push(`${comp} --> ${store} : "{${parts.join(', ')}}"`);
+      }
+    }
+  }
+  if (storeUsageLines.length > 0) {
+    lines.push('%% Store Usage Details');
+    lines.push(...storeUsageLines);
+    lines.push('');
+  }
+
+  // %% Module Import Relationships (vanilla repos)
+  if (repoType === 'vanilla') {
+    const moduleImports = elements.moduleImportRelationships ?? new Map<string, Set<string>>();
+    const importLines: string[] = [];
+    for (const [filePath, importedFiles] of moduleImports) {
+      const sourceStem = getFileStem(filePath);
+      if (!sourceStem) continue;
+      for (const imported of importedFiles) {
+        importLines.push(`${sourceStem} --> ${imported} : "imports"`);
+      }
+    }
+    if (importLines.length > 0) {
+      lines.push('%% Module Import Relationships');
+      lines.push(...importLines);
+      lines.push('');
+    }
   }
 
   // %% API Endpoints

@@ -22,6 +22,9 @@ function makeElements(): Elements {
     fileContainers: new Map(),
     internalHelperComponents: [],
     rawCallSites: [],
+    storeUsageRelationships: new Map(),
+    hookReturnValueRelationships: new Map(),
+    moduleImportRelationships: new Map(),
     apiEndpoints: new Map(),
     errorBoundaries: new Set(),
     suspenseBoundaries: new Set(),
@@ -1260,5 +1263,338 @@ describe('deep call-site traversal (rawCallSites)', () => {
     expect(site).toBeDefined();
     expect(site?.caller).toBe('SphereRenderer');
     expect(site?.calleeName).toBe('useStore');
+  });
+});
+
+describe('storeUsageRelationships tracking', () => {
+  function makeComponentAST(componentName: string, body: unknown[]) {
+    return {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: componentName },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  ...body,
+                  { type: 'ReturnStatement', argument: { type: 'JSXElement' } },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  it('tracks destructured properties from store hook call', () => {
+    const ast = makeComponentAST('App', [
+      {
+        type: 'VariableDeclaration',
+        declarations: [
+          {
+            type: 'VariableDeclarator',
+            id: {
+              type: 'ObjectPattern',
+              properties: [
+                { key: { name: 'objects' } },
+                { key: { name: 'addObject' } },
+              ],
+            },
+            init: {
+              type: 'CallExpression',
+              callee: { type: 'Identifier', name: 'useObjectsStore' },
+              arguments: [],
+            },
+          },
+        ],
+      },
+    ]);
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const storeMap = elements.storeUsageRelationships.get('App');
+    expect(storeMap).toBeDefined();
+    const info = storeMap!.get('useObjectsStore');
+    expect(info).toBeDefined();
+    expect(info!.properties.has('objects')).toBe(true);
+    expect(info!.properties.has('addObject')).toBe(true);
+  });
+
+  it('tracks selector property from useStore(state => state.x)', () => {
+    const ast = makeComponentAST('App', [
+      {
+        type: 'VariableDeclaration',
+        declarations: [
+          {
+            type: 'VariableDeclarator',
+            id: { type: 'Identifier', name: 'selectedItem' },
+            init: {
+              type: 'CallExpression',
+              callee: { type: 'Identifier', name: 'useObjectsStore' },
+              arguments: [
+                {
+                  type: 'ArrowFunctionExpression',
+                  body: {
+                    type: 'MemberExpression',
+                    object: { type: 'Identifier', name: 'state' },
+                    property: { type: 'Identifier', name: 'selectedObject' },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const storeMap = elements.storeUsageRelationships.get('App');
+    expect(storeMap).toBeDefined();
+    const info = storeMap!.get('useObjectsStore');
+    expect(info).toBeDefined();
+    expect(info!.properties.has('selectedObject')).toBe(true);
+  });
+
+  it('tracks getState() destructuring as store properties', () => {
+    const ast = makeComponentAST('App', [
+      {
+        type: 'VariableDeclaration',
+        declarations: [
+          {
+            type: 'VariableDeclarator',
+            id: {
+              type: 'ObjectPattern',
+              properties: [{ key: { name: 'items' } }, { key: { name: 'count' } }],
+            },
+            init: {
+              type: 'CallExpression',
+              callee: {
+                type: 'MemberExpression',
+                object: { type: 'Identifier', name: 'useDataStore' },
+                property: { type: 'Identifier', name: 'getState' },
+              },
+              arguments: [],
+            },
+          },
+        ],
+      },
+    ]);
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const storeMap = elements.storeUsageRelationships.get('App');
+    expect(storeMap).toBeDefined();
+    const info = storeMap!.get('useDataStore');
+    expect(info).toBeDefined();
+    expect(info!.properties.has('items')).toBe(true);
+    expect(info!.properties.has('count')).toBe(true);
+  });
+
+  it('tracks setState() calls as actions in storeUsageRelationships', () => {
+    const ast = makeComponentAST('App', [
+      {
+        type: 'ExpressionStatement',
+        expression: {
+          type: 'CallExpression',
+          callee: {
+            type: 'MemberExpression',
+            object: { type: 'Identifier', name: 'useDataStore' },
+            property: { type: 'Identifier', name: 'setState' },
+          },
+          arguments: [],
+        },
+      },
+    ]);
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const storeMap = elements.storeUsageRelationships.get('App');
+    expect(storeMap).toBeDefined();
+    const info = storeMap!.get('useDataStore');
+    expect(info).toBeDefined();
+    expect(info!.actions.has('setState')).toBe(true);
+  });
+});
+
+describe('hookReturnValueRelationships tracking', () => {
+  it('tracks destructured values from non-store custom hooks', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'UserProfile' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'VariableDeclaration',
+                    declarations: [
+                      {
+                        type: 'VariableDeclarator',
+                        id: {
+                          type: 'ObjectPattern',
+                          properties: [
+                            { key: { name: 'user' } },
+                            { key: { name: 'isAuthenticated' } },
+                          ],
+                        },
+                        init: {
+                          type: 'CallExpression',
+                          callee: { type: 'Identifier', name: 'useAuth' },
+                          arguments: [],
+                        },
+                      },
+                    ],
+                  },
+                  { type: 'ReturnStatement', argument: { type: 'JSXElement' } },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/UserProfile.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rvList = elements.hookReturnValueRelationships.get('UserProfile');
+    expect(rvList).toBeDefined();
+    const entry = rvList!.find(e => e.hook === 'useAuth');
+    expect(entry).toBeDefined();
+    expect(entry!.returnValues).toContain('user');
+    expect(entry!.returnValues).toContain('isAuthenticated');
+  });
+
+  it('does NOT track store hooks in hookReturnValueRelationships', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'App' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'VariableDeclaration',
+                    declarations: [
+                      {
+                        type: 'VariableDeclarator',
+                        id: {
+                          type: 'ObjectPattern',
+                          properties: [{ key: { name: 'items' } }],
+                        },
+                        init: {
+                          type: 'CallExpression',
+                          callee: { type: 'Identifier', name: 'useItemsStore' },
+                          arguments: [],
+                        },
+                      },
+                    ],
+                  },
+                  { type: 'ReturnStatement', argument: { type: 'JSXElement' } },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rvList = elements.hookReturnValueRelationships.get('App');
+    // Store hooks should NOT appear in hookReturnValueRelationships
+    expect(rvList).toBeUndefined();
+  });
+});
+
+describe('moduleImportRelationships tracking', () => {
+  it('tracks relative imports as moduleImportRelationships in vanilla traversal', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ImportDeclaration',
+            source: { value: './helpers' },
+            specifiers: [],
+          },
+          {
+            type: 'ImportDeclaration',
+            source: { value: '../config' },
+            specifiers: [],
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, '/src/utils/utils.ts', makeFileContext({ isUtil: true }), elements, foundItems);
+    const imports = elements.moduleImportRelationships.get('/src/utils/utils.ts');
+    expect(imports).toBeDefined();
+    expect(imports!.has('helpers')).toBe(true);
+    expect(imports!.has('config')).toBe(true);
+  });
+
+  it('does NOT track non-relative imports in moduleImportRelationships', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ImportDeclaration',
+            source: { value: 'react' },
+            specifiers: [],
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, '/src/utils/utils.ts', makeFileContext({ isUtil: true }), elements, foundItems);
+    const imports = elements.moduleImportRelationships.get('/src/utils/utils.ts');
+    expect(imports).toBeUndefined();
+  });
+
+  it('strips file extensions from imported basenames', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ImportDeclaration',
+            source: { value: './helpers.ts' },
+            specifiers: [],
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, '/src/utils/utils.ts', makeFileContext({ isUtil: true }), elements, foundItems);
+    const imports = elements.moduleImportRelationships.get('/src/utils/utils.ts');
+    expect(imports).toBeDefined();
+    expect(imports!.has('helpers')).toBe(true);
+    expect(imports!.has('helpers.ts')).toBe(false);
   });
 });

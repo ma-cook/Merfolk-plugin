@@ -87,6 +87,9 @@ export interface Elements {
   fileContainers: Map<string, FileContainerInfo>; // key = filePath
   internalHelperComponents: InternalHelperComponent[];
   rawCallSites: RawCallSite[];                     // per-call-site (NOT deduplicated)
+  storeUsageRelationships: Map<string, Map<string, StoreUsageInfo>>; // component -> store -> {properties, actions}
+  hookReturnValueRelationships: Map<string, HookReturnValueInfo[]>;  // component -> hook return info
+  moduleImportRelationships: Map<string, Set<string>>;               // sourceFile -> Set<importedFileBasename>
   apiEndpoints: Map<string, {method: string, path: string, handlers: string[], sourceFile: string}>;
   errorBoundaries: Set<string>;
   suspenseBoundaries: Set<string>;
