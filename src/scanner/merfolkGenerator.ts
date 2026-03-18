@@ -114,20 +114,20 @@ export function generateMerfolkMarkdown(
     lines.push('');
   }
 
-  // %% Hooks — use [Function: name] syntax (same as volscape reference)
+  // %% Hooks
   if (hooks.length > 0) {
     lines.push('%% Hooks');
     for (const hook of hooks) {
-      lines.push(`${hook}[Function: ${hook}]`);
+      lines.push(`${hook}[Hook: ${hook}]`);
     }
     lines.push('');
   }
 
-  // %% Services — use [Function: name] syntax (same as volscape reference)
+  // %% Services
   if (services.length > 0) {
     lines.push('%% Services');
     for (const svc of services) {
-      lines.push(`${svc}[Function: ${svc}]`);
+      lines.push(`${svc}((Service: ${svc}))`);
     }
     lines.push('');
   }

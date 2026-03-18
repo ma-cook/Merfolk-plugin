@@ -60,13 +60,13 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('[[Store: userStore]]');
   });
 
-  it('creates Service nodes with [Function: name] syntax', () => {
+  it('creates Service nodes with ((Service: name)) syntax', () => {
     const result = generateMerfolkMarkdown(
       makeElements({ services: ['ApiService'] }),
       'repo',
       'react'
     );
-    expect(result).toContain('ApiService[Function: ApiService]');
+    expect(result).toContain('ApiService((Service: ApiService))');
   });
 
   it('creates Library nodes with <Library: name> syntax', () => {
@@ -78,13 +78,13 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('<Library: lodash>');
   });
 
-  it('creates Hook nodes with [Function: name] syntax', () => {
+  it('creates Hook nodes with [Hook: name] syntax', () => {
     const result = generateMerfolkMarkdown(
       makeElements({ hooks: ['useAuth'] }),
       'repo',
       'react'
     );
-    expect(result).toContain('useAuth[Function: useAuth]');
+    expect(result).toContain('useAuth[Hook: useAuth]');
   });
 
   it('creates dashed arrows for component-function relationships (-.->) ', () => {
@@ -149,8 +149,8 @@ describe('generateMerfolkMarkdown', () => {
       'repo',
       'react'
     );
-    expect(result).toContain('apiUtil[Function: apiUtil]');
-    const matches = result.match(/apiUtil\[Function: apiUtil\]/g) ?? [];
+    expect(result).toContain('apiUtil((Service: apiUtil))');
+    const matches = result.match(/apiUtil\(\(Service: apiUtil\)\)/g) ?? [];
     expect(matches.length).toBe(1);
   });
 
