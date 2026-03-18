@@ -17,6 +17,10 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     fileContainers: new Map(),
     internalHelperComponents: [],
     rawCallSites: [],
+    functionCallRelationships: new Map(),
+    nextjsRouteMap: new Map(),
+    internalHooks: new Map(),
+    filesNeedingSuffix: new Set(),
     ...overrides,
   };
 }
@@ -416,5 +420,241 @@ describe('generateMerfolkMarkdown', () => {
       'react'
     );
     expect(result).not.toContain('unknownFunction');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix #6 — functionCallRelationships: service/utility method call two-line chains
+// ---------------------------------------------------------------------------
+
+describe('generateMerfolkMarkdown — functionCallRelationships', () => {
+  it('emits two-line chain for service method calls via functionCallRelationships', () => {
+    const funcCallRels = new Map();
+    funcCallRels.set('App', new Set([
+      { target: 'apiService', label: '.fetchData()', type: 'service' as const },
+    ]));
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['App'],
+        services: ['apiService'],
+        functionCallRelationships: funcCallRels,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Function Call Relationships');
+    expect(result).toContain('App --> apiService : "calls .fetchData()"');
+    expect(result).toContain('apiService --> fetchData : "receives"');
+  });
+
+  it('emits two-line chain for utility method calls via functionCallRelationships', () => {
+    const funcCallRels = new Map();
+    funcCallRels.set('Dashboard', new Set([
+      { target: 'formatUtil', label: '.formatDate()', type: 'utility' as const },
+    ]));
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['Dashboard'],
+        utilities: ['formatUtil'],
+        functionCallRelationships: funcCallRels,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('Dashboard --> formatUtil : "calls .formatDate()"');
+    expect(result).toContain('formatUtil --> formatDate : "receives"');
+  });
+
+  it('skips functionCallRelationships entries for unknown services/utilities', () => {
+    const funcCallRels = new Map();
+    funcCallRels.set('App', new Set([
+      { target: 'unknownService', label: '.doSomething()', type: 'service' as const },
+    ]));
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['App'],
+        functionCallRelationships: funcCallRels,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).not.toContain('unknownService');
+  });
+
+  it('deduplicates identical entries in functionCallRelationships', () => {
+    const rels = new Set([
+      { target: 'apiService', label: '.fetchData()', type: 'service' as const },
+      { target: 'apiService', label: '.fetchData()', type: 'service' as const },
+    ]);
+    const funcCallRels = new Map();
+    funcCallRels.set('App', rels);
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['App'],
+        services: ['apiService'],
+        functionCallRelationships: funcCallRels,
+      }),
+      'repo',
+      'react'
+    );
+    const matches = result.match(/App --> apiService : "calls \.fetchData\(\)"/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix #8 — Next.js Route Hierarchy section
+// ---------------------------------------------------------------------------
+
+describe('generateMerfolkMarkdown — Next.js Route Hierarchy', () => {
+  it('emits %% Next.js Route Hierarchy section for nextjs repos with routes', () => {
+    const routeMap = new Map();
+    routeMap.set('/app/dashboard/page.tsx', {
+      segment: 'dashboard',
+      routePath: '/dashboard',
+      parentRoutePath: '/',
+      isLayout: false,
+      isPage: true,
+      isLoading: false,
+      isError: false,
+      isNotFound: false,
+      isAppShell: false,
+      isDocument: false,
+      isMiddleware: false,
+      isApi: false,
+      filePath: '/app/dashboard/page.tsx',
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({ nextjsRouteMap: routeMap }),
+      'my-next-app',
+      'nextjs'
+    );
+    expect(result).toContain('%% Next.js Route Hierarchy');
+    expect(result).toContain('app_root');
+    expect(result).toContain('dashboard');
+    expect(result).toContain('"contains"');
+  });
+
+  it('does NOT emit %% Next.js Route Hierarchy for react repos', () => {
+    const routeMap = new Map();
+    routeMap.set('/app/page.tsx', {
+      segment: '',
+      routePath: '/',
+      parentRoutePath: '/',
+      isLayout: false,
+      isPage: true,
+      isLoading: false,
+      isError: false,
+      isNotFound: false,
+      isAppShell: false,
+      isDocument: false,
+      isMiddleware: false,
+      isApi: false,
+      filePath: '/app/page.tsx',
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({ nextjsRouteMap: routeMap }),
+      'my-react-app',
+      'react'
+    );
+    expect(result).not.toContain('%% Next.js Route Hierarchy');
+  });
+
+  it('does NOT emit %% Next.js Route Hierarchy when map is empty', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ nextjsRouteMap: new Map() }),
+      'my-next-app',
+      'nextjs'
+    );
+    expect(result).not.toContain('%% Next.js Route Hierarchy');
+  });
+
+  it('emits layout node with Layout type when isLayout is true', () => {
+    const routeMap = new Map();
+    routeMap.set('/app/layout.tsx', {
+      segment: '',
+      routePath: '/',
+      parentRoutePath: '/',
+      isLayout: true,
+      isPage: false,
+      isLoading: false,
+      isError: false,
+      isNotFound: false,
+      isAppShell: false,
+      isDocument: false,
+      isMiddleware: false,
+      isApi: false,
+      filePath: '/app/layout.tsx',
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({ nextjsRouteMap: routeMap }),
+      'my-next-app',
+      'nextjs'
+    );
+    expect(result).toContain('Layout:');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix #9 — Internal Hook Nesting section
+// ---------------------------------------------------------------------------
+
+describe('generateMerfolkMarkdown — Internal Hook Nesting', () => {
+  it('emits %% Internal Hook Nesting section with containment arrow', () => {
+    const containers = new Map();
+    containers.set('/src/hooks/useAuth.ts', {
+      type: 'Hook',
+      functions: new Set(['useAuth']),
+      nodeId: 'useAuth_file',
+      displayName: 'useAuth',
+      isBackend: false,
+    });
+    const internalHooks = new Map();
+    internalHooks.set('useAuth', { parent: 'useAuth', parentType: 'hook' as const });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        hooks: ['useAuth'],
+        fileContainers: containers,
+        internalHooks,
+        filesNeedingSuffix: new Set(['useAuth']),
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Internal Hook Nesting');
+    expect(result).toContain('useAuth_file -.-> useAuth : "contains hook"');
+  });
+
+  it('does NOT emit %% Internal Hook Nesting when internalHooks is empty', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ internalHooks: new Map() }),
+      'repo',
+      'react'
+    );
+    expect(result).not.toContain('%% Internal Hook Nesting');
+  });
+
+  it('uses funcToContainerNodeId to resolve the container nodeId', () => {
+    const containers = new Map();
+    containers.set('/hooks/useTheme.ts', {
+      type: 'Hook',
+      functions: new Set(['useTheme']),
+      nodeId: 'useTheme_file',
+      displayName: 'useTheme',
+      isBackend: false,
+    });
+    const internalHooks = new Map();
+    internalHooks.set('useTheme', { parent: 'useTheme', parentType: 'hook' as const });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        hooks: ['useTheme'],
+        fileContainers: containers,
+        internalHooks,
+        filesNeedingSuffix: new Set(['useTheme']),
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('useTheme_file -.-> useTheme : "contains hook"');
   });
 });

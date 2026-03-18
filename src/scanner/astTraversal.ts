@@ -1,5 +1,7 @@
 import type { Elements, FoundItems, FileContext, ComponentInternalFunction } from '../types';
 import { containsJSX } from './fileAnalyzer';
+import { detectNextjsRoute } from './nextjsRouteDetector';
+import { filePathToStem } from '../utils';
 import { parse } from '@babel/parser';
 
 type ASTNode = Record<string, unknown>;
@@ -28,8 +30,7 @@ function addToFileContainer(
 ): void {
   if (fileContext.isComponent) return;
 
-  const base = filePath.replace(/\\/g, '/').split('/').pop() ?? '';
-  const stem = base.replace(/\.[^.]+$/, '');
+  const stem = filePathToStem(filePath);
   if (!stem) return;
 
   let containerType: string;
@@ -222,6 +223,14 @@ function walkNodeForJSX(
           if ((attr.type as string) === 'JSXAttribute') {
             const propName = (attr.name as ASTNode)?.name as string | undefined;
             if (propName) propNames.push(propName);
+          } else if ((attr.type as string) === 'JSXSpreadAttribute') {
+            // Spread: {...props} or {...namedProps} → record as ...spreadName
+            const arg = attr.argument as ASTNode | undefined;
+            if (arg?.type === 'Identifier') {
+              propNames.push(`...${arg.name as string}`);
+            } else {
+              propNames.push('...spread');
+            }
           }
         }
       }
@@ -284,10 +293,33 @@ const SKIP_CALL_NAMES = new Set([
   'require', 'import',
 ]);
 
+// Method names to skip when capturing MemberExpression calls (avoids noise from array/string/promise methods)
+const SKIP_METHOD_NAMES = new Set([
+  // Array methods
+  'map', 'filter', 'reduce', 'reduceRight', 'forEach', 'find', 'findIndex',
+  'some', 'every', 'flat', 'flatMap', 'includes', 'indexOf', 'lastIndexOf',
+  'sort', 'reverse', 'slice', 'splice', 'concat', 'join', 'pop', 'push',
+  'shift', 'unshift', 'fill', 'copyWithin', 'entries', 'keys', 'values',
+  // String methods
+  'split', 'trim', 'trimStart', 'trimEnd', 'replace', 'replaceAll',
+  'startsWith', 'endsWith', 'toLowerCase', 'toUpperCase', 'substring',
+  'substr', 'charAt', 'padStart', 'padEnd', 'repeat', 'match', 'search',
+  // Promise / async
+  'then', 'catch', 'finally', 'resolve', 'reject', 'all', 'race', 'allSettled',
+  // Object / misc
+  'toString', 'valueOf', 'hasOwnProperty', 'toJSON', 'assign', 'keys', 'values', 'entries',
+  // DOM / events
+  'addEventListener', 'removeEventListener', 'dispatchEvent',
+  'preventDefault', 'stopPropagation',
+  // Already handled separately — kept here for clarity
+  'getState', 'setState',
+]);
+
 /**
  * Recursively walk any AST node and record every CallExpression whose callee
  * refers to a user-defined function or store method.
  * Results are pushed onto elements.rawCallSites (no deduplication).
+ * Service/utility method calls are also tracked in functionCallRelationships (deduplicated).
  */
 function deepWalkForCallSites(
   node: unknown,
@@ -329,6 +361,29 @@ function deepWalkForCallSites(
             calleeName: objName,
             method: `.${propName}()`,
           });
+        } else if (
+          objName &&
+          propName &&
+          !SKIP_CALL_NAMES.has(objName) &&
+          !SKIP_METHOD_NAMES.has(propName)
+        ) {
+          // Service/utility method call (e.g. apiService.fetchData())
+          // Track in functionCallRelationships for deduplicated two-line chains
+          if (!elements.functionCallRelationships.has(callerName)) {
+            elements.functionCallRelationships.set(callerName, new Set());
+          }
+          const rels = elements.functionCallRelationships.get(callerName)!;
+          // Manual dedup since Set compares objects by reference
+          let alreadyTracked = false;
+          for (const r of rels) {
+            if (r.target === objName && r.label === `.${propName}()`) {
+              alreadyTracked = true;
+              break;
+            }
+          }
+          if (!alreadyTracked) {
+            rels.add({ target: objName, label: `.${propName}()`, type: 'service' });
+          }
         }
       }
     }
@@ -582,9 +637,15 @@ export function traverseReactAST(
   elements: Elements,
   foundItems: FoundItems
 ): void {
-  // Snapshot to detect components added in this file
+  // Snapshot to detect components and hooks added in this file
   const componentsBefore = new Set(foundItems.components);
+  const hooksBefore = new Set(foundItems.hooks);
   const relsBefore = elements.componentRelationships.length;
+
+  // Fix #8: Detect Next.js App Router route files and populate nextjsRouteMap
+  if (fileContext.isNextRoute) {
+    detectNextjsRoute(filePath, fileContext, elements);
+  }
 
   // Base extraction via vanilla traversal
   traverseVanillaAST(ast, filePath, fileContext, elements, foundItems);
@@ -651,6 +712,23 @@ export function traverseReactAST(
           });
         }
       }
+    }
+  }
+
+  // Fix #9: Detect hooks that share their name with the file stem (name collision).
+  // When a hook named e.g. "useAuth" is defined in "useAuth.ts", the file container
+  // and the hook would share the same nodeId. Track these so the generator can
+  // apply _file suffix and emit an %% Internal Hook Nesting section.
+  const fileStem = filePathToStem(filePath);
+  const newHooks = [...foundItems.hooks].filter(h => !hooksBefore.has(h));
+  for (const hookName of newHooks) {
+    if (hookName === fileStem && hookName.startsWith('use')) {
+      // Hook name matches file stem exactly — collision will require _file suffix on container
+      elements.internalHooks.set(hookName, {
+        parent: fileStem,
+        parentType: 'hook',
+      });
+      elements.filesNeedingSuffix.add(fileStem);
     }
   }
 }

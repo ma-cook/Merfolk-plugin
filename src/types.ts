@@ -87,6 +87,10 @@ export interface Elements {
   fileContainers: Map<string, FileContainerInfo>; // key = filePath
   internalHelperComponents: InternalHelperComponent[];
   rawCallSites: RawCallSite[];                     // per-call-site (NOT deduplicated)
+  functionCallRelationships: Map<string, Set<FunctionCallRelationship>>; // component -> service/utility method calls (deduplicated)
+  nextjsRouteMap: Map<string, NextjsRouteInfo>;    // filePath -> route info (Next.js only)
+  internalHooks: Map<string, { parent: string; parentType: 'component' | 'hook' }>; // hookName -> containment info
+  filesNeedingSuffix: Set<string>;                 // file stems that need _file suffix due to name collision
 }
 
 // Track what's already found to avoid duplicates

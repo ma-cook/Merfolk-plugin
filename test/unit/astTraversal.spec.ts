@@ -22,6 +22,10 @@ function makeElements(): Elements {
     fileContainers: new Map(),
     internalHelperComponents: [],
     rawCallSites: [],
+    functionCallRelationships: new Map(),
+    nextjsRouteMap: new Map(),
+    internalHooks: new Map(),
+    filesNeedingSuffix: new Set(),
   };
 }
 
@@ -1252,5 +1256,449 @@ describe('deep call-site traversal (rawCallSites)', () => {
     expect(site).toBeDefined();
     expect(site?.caller).toBe('SphereRenderer');
     expect(site?.calleeName).toBe('useStore');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix #7 — JSX Spread Attribute tracking
+// ---------------------------------------------------------------------------
+
+describe('walkNodeForJSX — JSXSpreadAttribute', () => {
+  it('captures named spread attribute as ...propName', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'Parent' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ReturnStatement',
+                    argument: {
+                      type: 'JSXElement',
+                      openingElement: {
+                        name: { type: 'JSXIdentifier', name: 'Child' },
+                        attributes: [
+                          {
+                            type: 'JSXSpreadAttribute',
+                            argument: { type: 'Identifier', name: 'childProps' },
+                          },
+                        ],
+                      },
+                      children: [],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/Parent.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rel = elements.componentRelationships.find(r => r.parent === 'Parent' && r.child === 'Child');
+    expect(rel).toBeDefined();
+    expect(rel?.props).toContain('...childProps');
+  });
+
+  it('captures anonymous spread attribute as ...spread', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'Wrapper' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ReturnStatement',
+                    argument: {
+                      type: 'JSXElement',
+                      openingElement: {
+                        name: { type: 'JSXIdentifier', name: 'Inner' },
+                        attributes: [
+                          {
+                            type: 'JSXSpreadAttribute',
+                            argument: { type: 'ObjectExpression', properties: [] },
+                          },
+                        ],
+                      },
+                      children: [],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/Wrapper.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rel = elements.componentRelationships.find(r => r.parent === 'Wrapper' && r.child === 'Inner');
+    expect(rel).toBeDefined();
+    expect(rel?.props).toContain('...spread');
+  });
+
+  it('mixes named props and spread attributes', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'Form' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ReturnStatement',
+                    argument: {
+                      type: 'JSXElement',
+                      openingElement: {
+                        name: { type: 'JSXIdentifier', name: 'Input' },
+                        attributes: [
+                          {
+                            type: 'JSXAttribute',
+                            name: { name: 'value' },
+                          },
+                          {
+                            type: 'JSXSpreadAttribute',
+                            argument: { type: 'Identifier', name: 'rest' },
+                          },
+                        ],
+                      },
+                      children: [],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/Form.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rel = elements.componentRelationships.find(r => r.parent === 'Form' && r.child === 'Input');
+    expect(rel).toBeDefined();
+    expect(rel?.props).toContain('value');
+    expect(rel?.props).toContain('...rest');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix #6 — functionCallRelationships (service/utility method calls)
+// ---------------------------------------------------------------------------
+
+describe('deepWalkForCallSites — MemberExpression method calls', () => {
+  it('captures service method calls in functionCallRelationships', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'App' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'CallExpression',
+                      callee: {
+                        type: 'MemberExpression',
+                        object: { type: 'Identifier', name: 'apiService' },
+                        property: { type: 'Identifier', name: 'fetchData' },
+                      },
+                      arguments: [],
+                    },
+                  },
+                  {
+                    type: 'ReturnStatement',
+                    argument: { type: 'JSXElement' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rels = elements.functionCallRelationships.get('App');
+    expect(rels).toBeDefined();
+    const targets = [...(rels ?? [])].map(r => r.target);
+    expect(targets).toContain('apiService');
+    const labels = [...(rels ?? [])].map(r => r.label);
+    expect(labels).toContain('.fetchData()');
+  });
+
+  it('deduplicates repeated method calls in functionCallRelationships', () => {
+    const callExpr = {
+      type: 'CallExpression',
+      callee: {
+        type: 'MemberExpression',
+        object: { type: 'Identifier', name: 'apiService' },
+        property: { type: 'Identifier', name: 'create' },
+      },
+      arguments: [],
+    };
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'Dashboard' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  { type: 'ExpressionStatement', expression: callExpr },
+                  { type: 'ExpressionStatement', expression: callExpr },
+                  {
+                    type: 'ReturnStatement',
+                    argument: { type: 'JSXElement' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/Dashboard.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rels = elements.functionCallRelationships.get('Dashboard');
+    // Should be deduplicated — only one entry for apiService/.create()
+    const matches = [...(rels ?? [])].filter(r => r.target === 'apiService' && r.label === '.create()');
+    expect(matches.length).toBe(1);
+  });
+
+  it('does not capture noise methods (map, filter, then, etc.)', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'ListComp' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'CallExpression',
+                      callee: {
+                        type: 'MemberExpression',
+                        object: { type: 'Identifier', name: 'items' },
+                        property: { type: 'Identifier', name: 'map' },
+                      },
+                      arguments: [],
+                    },
+                  },
+                  {
+                    type: 'ReturnStatement',
+                    argument: { type: 'JSXElement' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/ListComp.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rels = elements.functionCallRelationships.get('ListComp') ?? new Set();
+    const itemsRels = [...rels].filter(r => r.target === 'items');
+    expect(itemsRels.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix #8 — Next.js Route Detection
+// ---------------------------------------------------------------------------
+
+describe('traverseReactAST — Next.js route detection', () => {
+  const pageAst = {
+    type: 'File',
+    program: { type: 'Program', body: [] },
+  };
+
+  it('populates nextjsRouteMap for page.tsx in app/ directory', () => {
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      pageAst,
+      '/project/app/dashboard/page.tsx',
+      makeFileContext({ isNextRoute: true, isPage: true }),
+      elements,
+      foundItems
+    );
+    expect(elements.nextjsRouteMap.size).toBe(1);
+    const info = elements.nextjsRouteMap.get('/project/app/dashboard/page.tsx');
+    expect(info).toBeDefined();
+    expect(info?.isPage).toBe(true);
+    expect(info?.routePath).toBe('/dashboard');
+    expect(info?.segment).toBe('dashboard');
+  });
+
+  it('populates nextjsRouteMap for layout.tsx', () => {
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      pageAst,
+      '/project/app/layout.tsx',
+      makeFileContext({ isNextRoute: true, isLayout: true }),
+      elements,
+      foundItems
+    );
+    expect(elements.nextjsRouteMap.size).toBe(1);
+    const info = [...elements.nextjsRouteMap.values()][0];
+    expect(info?.isLayout).toBe(true);
+    expect(info?.routePath).toBe('/');
+  });
+
+  it('skips files not in app/ directory', () => {
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      pageAst,
+      '/project/pages/index.tsx',
+      makeFileContext({ isNextRoute: true, isPage: true }),
+      elements,
+      foundItems
+    );
+    // pages/ directory (old Next.js) not detected as App Router route
+    expect(elements.nextjsRouteMap.size).toBe(0);
+  });
+
+  it('does not populate nextjsRouteMap when isNextRoute is false', () => {
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      pageAst,
+      '/project/app/dashboard/page.tsx',
+      makeFileContext({ isNextRoute: false }),
+      elements,
+      foundItems
+    );
+    expect(elements.nextjsRouteMap.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix #9 — Internal hooks / _file suffix name collision
+// ---------------------------------------------------------------------------
+
+describe('traverseReactAST — internalHooks and filesNeedingSuffix', () => {
+  it('detects when a hook shares the file stem name and adds to internalHooks', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'useAuth' },
+              body: { type: 'BlockStatement', body: [] },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/hooks/useAuth.ts', makeFileContext({ isHook: true }), elements, foundItems);
+    expect(elements.internalHooks.has('useAuth')).toBe(true);
+    expect(elements.filesNeedingSuffix.has('useAuth')).toBe(true);
+    const entry = elements.internalHooks.get('useAuth');
+    expect(entry?.parent).toBe('useAuth');
+    expect(entry?.parentType).toBe('hook');
+  });
+
+  it('does NOT add to internalHooks when hook name differs from file stem', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'useAuth' },
+              body: { type: 'BlockStatement', body: [] },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    // Different file name — no collision
+    traverseReactAST(ast, 'src/hooks/authHelpers.ts', makeFileContext({ isHook: true }), elements, foundItems);
+    expect(elements.internalHooks.has('useAuth')).toBe(false);
+    expect(elements.filesNeedingSuffix.has('authHelpers')).toBe(false);
+  });
+
+  it('does NOT add non-hook functions to internalHooks even if name matches stem', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'apiService' },
+              body: { type: 'BlockStatement', body: [] },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/services/apiService.ts', makeFileContext({ isService: true }), elements, foundItems);
+    // apiService doesn't start with 'use', so not a hook
+    expect(elements.internalHooks.has('apiService')).toBe(false);
   });
 });

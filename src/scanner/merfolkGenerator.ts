@@ -1,5 +1,6 @@
 import type { Elements, RepoType, FileContainerInfo } from '../types';
 import { sanitizeNodeId } from '../utils';
+import { routePathToNodeId } from './nextjsRouteDetector';
 
 /** Compute the final nodeId for a file container, resolving name collisions. */
 function computeContainerNodeId(
@@ -38,6 +39,7 @@ export function generateMerfolkMarkdown(
   const utilities = [...new Set(elements.utilities)].filter(
     u => !storeSet.has(u) && !serviceSet.has(u)
   );
+  const utilitySet = new Set(utilities);
 
   // 3. Component set for collision detection
   const componentSet = new Set(components);
@@ -266,6 +268,7 @@ export function generateMerfolkMarkdown(
   // %% Function Call Relationships
   // Per-call-site (NOT deduplicated) two-line chains for function calls and
   // single-line store method calls discovered via deep body traversal.
+  // Service/utility method calls from functionCallRelationships are also included.
   const rawCallSites = elements.rawCallSites ?? [];
   const callRelLines: string[] = [];
   for (const site of rawCallSites) {
@@ -283,10 +286,76 @@ export function generateMerfolkMarkdown(
       }
     }
   }
+  // Service/utility method calls from functionCallRelationships (deduplicated)
+  const funcCallRels = elements.functionCallRelationships ?? new Map();
+  const seenFuncCallRels = new Set<string>();
+  for (const [caller, rels] of funcCallRels) {
+    for (const rel of rels) {
+      if (!serviceSet.has(rel.target) && !utilitySet.has(rel.target)) continue;
+      const dedupeKey = `${caller}|${rel.target}|${rel.label}`;
+      if (seenFuncCallRels.has(dedupeKey)) continue;
+      seenFuncCallRels.add(dedupeKey);
+      // Extract the method name from ".fetchData()" → "fetchData"
+      const methodName = rel.label.replace(/^\./, '').replace(/\(\)$/, '');
+      const container = funcToContainerNodeId.get(rel.target) ?? rel.target;
+      callRelLines.push(`${caller} --> ${container} : "calls ${rel.label}"`);
+      callRelLines.push(`${container} --> ${methodName} : "receives"`);
+    }
+  }
   if (callRelLines.length > 0) {
     lines.push('%% Function Call Relationships');
     lines.push(...callRelLines);
     lines.push('');
+  }
+
+  // %% Next.js Route Hierarchy (nextjs repos only)
+  const nextjsRouteMap = elements.nextjsRouteMap ?? new Map();
+  if (repoType === 'nextjs' && nextjsRouteMap.size > 0) {
+    lines.push('%% Next.js Route Hierarchy');
+    const seenRouteNodes = new Set<string>();
+    for (const [, info] of nextjsRouteMap) {
+      const nodeId = routePathToNodeId(info.routePath);
+      const parentNodeId = routePathToNodeId(info.parentRoutePath);
+      // Emit this route's node if not yet emitted
+      if (!seenRouteNodes.has(nodeId)) {
+        seenRouteNodes.add(nodeId);
+        const label = info.isLayout
+          ? `${nodeId}{Layout: ${info.segment || 'root'}}`
+          : info.isPage
+          ? `${nodeId}{Component: ${info.segment || 'page'}}`
+          : info.isApi
+          ? `${nodeId}[Function: ${info.segment || 'api'}]`
+          : `${nodeId}{Component: ${info.segment || nodeId}}`;
+        lines.push(label);
+      }
+      // Emit parent node if not yet emitted (generic container)
+      if (!seenRouteNodes.has(parentNodeId)) {
+        seenRouteNodes.add(parentNodeId);
+        lines.push(`${parentNodeId}{Component: ${parentNodeId}}`);
+      }
+      // Emit containment relationship (skip self-references at the root)
+      if (parentNodeId !== nodeId) {
+        lines.push(`${parentNodeId} --> ${nodeId} : "contains"`);
+      }
+    }
+    lines.push('');
+  }
+
+  // %% Internal Hook Nesting
+  // Shows containment between a file container and the hook it defines when they share the same name.
+  const internalHooks = elements.internalHooks ?? new Map();
+  if (internalHooks.size > 0) {
+    const nestingLines: string[] = [];
+    for (const [hookName] of internalHooks) {
+      // The container should have _file suffix due to name collision
+      const containerNodeId = funcToContainerNodeId.get(hookName) ?? `${hookName}_file`;
+      nestingLines.push(`${containerNodeId} -.-> ${hookName} : "contains hook"`);
+    }
+    if (nestingLines.length > 0) {
+      lines.push('%% Internal Hook Nesting');
+      lines.push(...nestingLines);
+      lines.push('');
+    }
   }
 
   // Close code fence
