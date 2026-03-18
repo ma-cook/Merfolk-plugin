@@ -136,7 +136,13 @@ function processVanillaNode(
       }
     } else {
       const name = (decl.id as ASTNode | undefined)?.name as string | undefined;
-      if (name) classifyName(name, dt, fileContext, elements, foundItems, filePath);
+      if (name) {
+        classifyName(name, dt, fileContext, elements, foundItems, filePath);
+        if (dt === 'FunctionDeclaration' && !fileContext.isComponent) {
+          const body = decl.body as ASTNode | undefined;
+          if (body) deepWalkForCallSites(body, name, elements, 0);
+        }
+      }
     }
     return;
   }
@@ -147,14 +153,26 @@ function processVanillaNode(
     const dt = decl.type as string;
     if (dt === 'FunctionDeclaration' || dt === 'ClassDeclaration') {
       const name = (decl.id as ASTNode | undefined)?.name as string | undefined;
-      if (name) classifyName(name, dt, fileContext, elements, foundItems, filePath);
+      if (name) {
+        classifyName(name, dt, fileContext, elements, foundItems, filePath);
+        if (dt === 'FunctionDeclaration' && !fileContext.isComponent) {
+          const body = decl.body as ASTNode | undefined;
+          if (body) deepWalkForCallSites(body, name, elements, 0);
+        }
+      }
     }
     return;
   }
 
   if (type === 'FunctionDeclaration') {
     const name = (node.id as ASTNode | undefined)?.name as string | undefined;
-    if (name) classifyName(name, 'FunctionDeclaration', fileContext, elements, foundItems, filePath);
+    if (name) {
+      classifyName(name, 'FunctionDeclaration', fileContext, elements, foundItems, filePath);
+      if (!fileContext.isComponent) {
+        const body = node.body as ASTNode | undefined;
+        if (body) deepWalkForCallSites(body, name, elements, 0);
+      }
+    }
     return;
   }
 
@@ -758,7 +776,8 @@ function classifyPython(
   name: string,
   fileContext: FileContext,
   elements: Elements,
-  foundItems: FoundItems
+  foundItems: FoundItems,
+  filePath: string,
 ): void {
   if (fileContext.isService || fileContext.isModel) {
     addToSet(name, foundItems.services, elements.services);
@@ -767,11 +786,12 @@ function classifyPython(
   } else {
     addToSet(name, foundItems.functions, elements.functions);
   }
+  addToFileContainer(filePath, name, fileContext, elements);
 }
 
 export function traversePythonSource(
   source: string,
-  _filePath: string,
+  filePath: string,
   fileContext: FileContext,
   elements: Elements,
   foundItems: FoundItems
@@ -782,6 +802,7 @@ export function traversePythonSource(
   while ((match = classRegex.exec(source)) !== null) {
     const name = match[1];
     addToSet(name, foundItems.services, elements.services);
+    addToFileContainer(filePath, name, fileContext, elements);
   }
 
   // Extract function definitions (def / async def), skip private and dunder
@@ -789,7 +810,7 @@ export function traversePythonSource(
   while ((match = funcRegex.exec(source)) !== null) {
     const name = match[1];
     if (name.startsWith('_')) continue;
-    classifyPython(name, fileContext, elements, foundItems);
+    classifyPython(name, fileContext, elements, foundItems, filePath);
   }
 
   // Absolute imports: `import X` → add X to libraries
@@ -801,11 +822,23 @@ export function traversePythonSource(
     }
   }
 
-  // From-imports: `from X import Y` — skip relative (starts with '.'), else use top-level module
+  // From-imports: `from X import Y`
   const fromImportRegex = /^from\s+(\S+)\s+import/gm;
   while ((match = fromImportRegex.exec(source)) !== null) {
     const mod = match[1];
-    if (mod.startsWith('.')) continue;
+    if (mod.startsWith('.')) {
+      // Relative import → track in moduleImportRelationships
+      const withoutDots = mod.replace(/^\.+/, '');
+      const parts = withoutDots.split('.');
+      const stem = parts[parts.length - 1] || '';
+      if (stem) {
+        if (!elements.moduleImportRelationships.has(filePath)) {
+          elements.moduleImportRelationships.set(filePath, new Set());
+        }
+        elements.moduleImportRelationships.get(filePath)!.add(stem);
+      }
+      continue;
+    }
     const topMod = mod.split('.')[0];
     if (!elements.imports.libraries.includes(topMod)) {
       elements.imports.libraries.push(topMod);
@@ -874,6 +907,46 @@ export function traverseVueSource(
     const scriptContent = scriptMatch[1].trim();
     if (scriptContent) {
       parseJS(scriptContent, filePath, fileContext, elements, foundItems);
+
+      // Track composable/hook dependencies from script setup
+      if (componentName) {
+        const composableRegex = /\b(use[A-Z]\w*)\s*\(/g;
+        let composableMatch: RegExpExecArray | null;
+        const seenComposables = new Set<string>();
+        while ((composableMatch = composableRegex.exec(scriptContent)) !== null) {
+          const calleeName = composableMatch[1];
+          if (!REACT_BUILTIN_HOOKS.has(calleeName) && !seenComposables.has(calleeName)) {
+            seenComposables.add(calleeName);
+            elements.componentDependencies.push({
+              component: componentName,
+              target: calleeName,
+              targetNodeId: calleeName,
+              destructured: [],
+              label: 'uses',
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // Scan template for PascalCase child component usage → componentRelationships
+  const templateMatch = /<template[^>]*>([\s\S]*?)<\/template>/i.exec(source);
+  if (templateMatch && componentName) {
+    const templateContent = templateMatch[1];
+    const componentTagRegex = /<([A-Z][a-zA-Z0-9]*)\s*[\s/>"]/g;
+    let tagMatch: RegExpExecArray | null;
+    const seenChildren = new Set<string>();
+    while ((tagMatch = componentTagRegex.exec(templateContent)) !== null) {
+      const childName = tagMatch[1];
+      if (!seenChildren.has(childName)) {
+        seenChildren.add(childName);
+        elements.componentRelationships.push({
+          parent: componentName,
+          child: childName,
+          props: ['uses'],
+        });
+      }
     }
   }
 }
