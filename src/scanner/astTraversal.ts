@@ -111,8 +111,16 @@ function processVanillaNode(
     const decl = node.declaration as ASTNode | undefined;
     if (!decl) return;
     const dt = decl.type as string;
-    // Skip TypeScript-only declarations
-    if (dt === 'TSInterfaceDeclaration' || dt === 'TSTypeAliasDeclaration' || dt === 'TSEnumDeclaration') {
+    // Track exported TypeScript interfaces and type aliases as shared interfaces
+    if (dt === 'TSInterfaceDeclaration' || dt === 'TSTypeAliasDeclaration') {
+      const name = (decl.id as ASTNode | undefined)?.name as string | undefined;
+      if (name && filePath) {
+        elements.sharedInterfaces.set(name, { sourceFile: filePath });
+      }
+      return;
+    }
+    // Skip other TypeScript-only declarations
+    if (dt === 'TSEnumDeclaration') {
       return;
     }
     if (dt === 'VariableDeclaration') {
@@ -169,8 +177,11 @@ export function traverseVanillaAST(
   const a = ast as ASTNode;
   const body = (a.program as ASTNode | undefined)?.body as ASTNode[] | undefined;
   if (!body) return;
+  const stem = filePath.replace(/\\/g, '/').split('/').pop()?.replace(/\.[^.]+$/, '') ?? filePath;
   for (const node of body) {
     processVanillaNode(node, fileContext, elements, foundItems, filePath);
+    // Deep-walk each top-level statement for domain patterns (API endpoints, events, auth guards)
+    deepWalkForCallSites(node, stem, elements, 0);
   }
 }
 
@@ -225,6 +236,20 @@ function walkNodeForJSX(
           }
         }
       }
+
+      // Detect Suspense boundaries
+      if (childName === 'Suspense') {
+        const boundaryId = `Suspense_${parentComponent}`;
+        elements.suspenseBoundaries.add(boundaryId);
+        elements.errorContainment.push({ boundary: boundaryId, wraps: parentComponent, label: 'suspends' });
+      }
+
+      // Detect ErrorBoundary components
+      if (childName.includes('ErrorBoundary')) {
+        elements.errorBoundaries.add(childName);
+        elements.errorContainment.push({ boundary: childName, wraps: parentComponent, label: 'contains' });
+      }
+
       elements.componentRelationships.push({
         parent: parentComponent,
         child: childName,
@@ -284,6 +309,11 @@ const SKIP_CALL_NAMES = new Set([
   'require', 'import',
 ]);
 
+const HTTP_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'use']);
+const EVENT_EMITTER_METHODS = new Set(['emit', 'dispatch', 'publish']);
+const EVENT_LISTENER_METHODS = new Set(['on', 'addEventListener', 'subscribe']);
+const AUTH_GUARD_PATTERNS = ['auth', 'guard', 'protect', 'verify', 'require', 'permission', 'authenticate', 'authorize'];
+
 /**
  * Recursively walk any AST node and record every CallExpression whose callee
  * refers to a user-defined function or store method.
@@ -329,6 +359,119 @@ function deepWalkForCallSites(
             calleeName: objName,
             method: `.${propName}()`,
           });
+        }
+
+        // API endpoint detection: app.get('/path', handler), router.post('/path', handler), etc.
+        if (objName && propName && HTTP_METHODS.has(propName)) {
+          const callArgs = n.arguments as ASTNode[] | undefined;
+          if (callArgs && callArgs.length >= 1) {
+            const firstArg = callArgs[0] as ASTNode;
+            const pathValue = (firstArg.type as string) === 'StringLiteral'
+              ? (firstArg.value as string | undefined)
+              : undefined;
+            if (pathValue !== undefined) {
+              const pathId = pathValue.replace(/^\//, '').replace(/[/:?*[\]{}()\s]/g, '_') || 'root';
+              const endpointKey = `${propName.toUpperCase()}_${pathId}`;
+              const handlers: string[] = [];
+              for (let i = 1; i < callArgs.length; i++) {
+                const arg = callArgs[i] as ASTNode;
+                if ((arg.type as string) === 'Identifier') {
+                  handlers.push(arg.name as string);
+                }
+              }
+              if (!elements.apiEndpoints.has(endpointKey)) {
+                elements.apiEndpoints.set(endpointKey, {
+                  method: propName.toUpperCase(),
+                  path: pathValue,
+                  handlers,
+                  sourceFile: callerName,
+                });
+              } else {
+                const ep = elements.apiEndpoints.get(endpointKey)!;
+                for (const h of handlers) {
+                  if (!ep.handlers.includes(h)) ep.handlers.push(h);
+                }
+              }
+              // Detect auth guards: middleware args before the last handler that match auth patterns
+              if (callArgs.length >= 3) {
+                for (let i = 1; i < callArgs.length - 1; i++) {
+                  const arg = callArgs[i] as ASTNode;
+                  if ((arg.type as string) === 'Identifier') {
+                    const argName = arg.name as string;
+                    if (AUTH_GUARD_PATTERNS.some(p => argName.toLowerCase().includes(p))) {
+                      const lastArg = callArgs[callArgs.length - 1] as ASTNode;
+                      const protectedHandler = (lastArg.type as string) === 'Identifier'
+                        ? [lastArg.name as string]
+                        : [];
+                      if (!elements.authGuards.has(argName)) {
+                        elements.authGuards.set(argName, {
+                          guard: argName,
+                          protects: protectedHandler,
+                          sourceFile: callerName,
+                        });
+                      } else {
+                        const existing = elements.authGuards.get(argName)!;
+                        for (const h of protectedHandler) {
+                          if (!existing.protects.includes(h)) existing.protects.push(h);
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            } else if (propName === 'use' && callArgs.length >= 1) {
+              // app.use(authMiddleware) — global middleware without path
+              for (const arg of callArgs) {
+                const a = arg as ASTNode;
+                if ((a.type as string) === 'Identifier') {
+                  const argName = a.name as string;
+                  if (AUTH_GUARD_PATTERNS.some(p => argName.toLowerCase().includes(p))) {
+                    if (!elements.authGuards.has(argName)) {
+                      elements.authGuards.set(argName, {
+                        guard: argName,
+                        protects: ['*'],
+                        sourceFile: callerName,
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Event emitter detection: .emit('event'), .dispatch('event'), .publish('event')
+        if (propName && EVENT_EMITTER_METHODS.has(propName)) {
+          const callArgs = n.arguments as ASTNode[] | undefined;
+          if (callArgs && callArgs.length >= 1) {
+            const firstArg = callArgs[0] as ASTNode;
+            const eventName = (firstArg.type as string) === 'StringLiteral'
+              ? (firstArg.value as string | undefined)
+              : undefined;
+            if (eventName) {
+              if (!elements.eventEmitters.has(callerName)) {
+                elements.eventEmitters.set(callerName, new Set());
+              }
+              elements.eventEmitters.get(callerName)!.add(eventName);
+            }
+          }
+        }
+
+        // Event listener detection: .on('event'), .addEventListener('event'), .subscribe('event')
+        if (propName && EVENT_LISTENER_METHODS.has(propName)) {
+          const callArgs = n.arguments as ASTNode[] | undefined;
+          if (callArgs && callArgs.length >= 1) {
+            const firstArg = callArgs[0] as ASTNode;
+            const eventName = (firstArg.type as string) === 'StringLiteral'
+              ? (firstArg.value as string | undefined)
+              : undefined;
+            if (eventName) {
+              if (!elements.eventListeners.has(callerName)) {
+                elements.eventListeners.set(callerName, new Set());
+              }
+              elements.eventListeners.get(callerName)!.add(eventName);
+            }
+          }
         }
       }
     }

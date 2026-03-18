@@ -87,6 +87,14 @@ export interface Elements {
   fileContainers: Map<string, FileContainerInfo>; // key = filePath
   internalHelperComponents: InternalHelperComponent[];
   rawCallSites: RawCallSite[];                     // per-call-site (NOT deduplicated)
+  apiEndpoints: Map<string, {method: string, path: string, handlers: string[], sourceFile: string}>;
+  errorBoundaries: Set<string>;
+  suspenseBoundaries: Set<string>;
+  errorContainment: Array<{boundary: string, wraps: string, label: string}>;
+  eventEmitters: Map<string, Set<string>>;   // component -> Set<eventName>
+  eventListeners: Map<string, Set<string>>;  // component -> Set<eventName>
+  sharedInterfaces: Map<string, {sourceFile: string}>;
+  authGuards: Map<string, {guard: string, protects: string[], sourceFile: string}>;
 }
 
 // Track what's already found to avoid duplicates

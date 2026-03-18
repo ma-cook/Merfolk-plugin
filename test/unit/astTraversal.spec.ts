@@ -22,6 +22,14 @@ function makeElements(): Elements {
     fileContainers: new Map(),
     internalHelperComponents: [],
     rawCallSites: [],
+    apiEndpoints: new Map(),
+    errorBoundaries: new Set(),
+    suspenseBoundaries: new Set(),
+    errorContainment: [],
+    eventEmitters: new Map(),
+    eventListeners: new Map(),
+    sharedInterfaces: new Map(),
+    authGuards: new Map(),
   };
 }
 

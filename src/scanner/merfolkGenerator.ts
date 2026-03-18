@@ -289,6 +289,96 @@ export function generateMerfolkMarkdown(
     lines.push('');
   }
 
+  // %% API Endpoints
+  const apiEndpoints = elements.apiEndpoints ?? new Map();
+  if (apiEndpoints.size > 0) {
+    lines.push('%% API Endpoints');
+    for (const [key, ep] of apiEndpoints) {
+      const nodeId = sanitizeNodeId(key);
+      lines.push(`${nodeId}((Service: ${ep.method} ${ep.path}))`);
+      for (const handler of ep.handlers) {
+        lines.push(`${nodeId} --> ${handler} : "handles"`);
+      }
+    }
+    lines.push('');
+  }
+
+  // %% Error Boundaries
+  const suspenseBoundaries = elements.suspenseBoundaries ?? new Set<string>();
+  const errorBoundaries = elements.errorBoundaries ?? new Set<string>();
+  const errorContainment = elements.errorContainment ?? [];
+  if (suspenseBoundaries.size > 0 || errorBoundaries.size > 0) {
+    lines.push('%% Error Boundaries');
+    for (const boundary of suspenseBoundaries) {
+      lines.push(`${boundary}{Component: ${boundary}}`);
+    }
+    for (const boundary of errorBoundaries) {
+      lines.push(`${boundary}{Component: ${boundary}}`);
+    }
+    const seenContainment = new Set<string>();
+    for (const entry of errorContainment) {
+      const key = `${entry.boundary}|${entry.wraps}`;
+      if (!seenContainment.has(key)) {
+        seenContainment.add(key);
+        lines.push(`${entry.boundary} --> ${entry.wraps} : "${entry.label}"`);
+      }
+    }
+    lines.push('');
+  }
+
+  // %% Event Architecture
+  const eventEmitters = elements.eventEmitters ?? new Map<string, Set<string>>();
+  const eventListeners = elements.eventListeners ?? new Map<string, Set<string>>();
+  const eventLines: string[] = [];
+  for (const [emitter, events] of eventEmitters) {
+    for (const eventName of events) {
+      // Find listeners for this event
+      const listeners: string[] = [];
+      for (const [listener, listenedEvents] of eventListeners) {
+        if (listenedEvents.has(eventName)) {
+          listeners.push(listener);
+        }
+      }
+      if (listeners.length > 0) {
+        for (const listener of listeners) {
+          eventLines.push(`${emitter} --> ${listener} : "emits: ${eventName}"`);
+        }
+      } else {
+        eventLines.push(`${emitter} --> ${sanitizeNodeId(eventName)}Bus : "emits: ${eventName}"`);
+      }
+    }
+  }
+  if (eventLines.length > 0) {
+    lines.push('%% Event Architecture');
+    lines.push(...eventLines);
+    lines.push('');
+  }
+
+  // %% Shared Interfaces
+  const sharedInterfaces = elements.sharedInterfaces ?? new Map<string, {sourceFile: string}>();
+  if (sharedInterfaces.size > 0) {
+    lines.push('%% Shared Interfaces');
+    for (const [name] of sharedInterfaces) {
+      lines.push(`${name}[Function: ${name}]`);
+    }
+    lines.push('');
+  }
+
+  // %% Auth Guards
+  const authGuards = elements.authGuards ?? new Map<string, {guard: string, protects: string[], sourceFile: string}>();
+  if (authGuards.size > 0) {
+    lines.push('%% Auth Guards');
+    for (const [, entry] of authGuards) {
+      lines.push(`${entry.guard}((Service: ${entry.guard}))`);
+      for (const target of entry.protects) {
+        if (target !== '*') {
+          lines.push(`${entry.guard} --> ${target} : "guards"`);
+        }
+      }
+    }
+    lines.push('');
+  }
+
   // Close code fence
   lines.push('```');
 
