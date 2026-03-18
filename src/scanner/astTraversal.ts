@@ -144,7 +144,7 @@ function processReactDecl(
   if (dt === 'FunctionDeclaration' || dt === 'FunctionExpression') {
     const name = (decl.id as ASTNode | undefined)?.name as string | undefined;
     const body = decl.body as unknown;
-    if (name && containsJSX(body, fileContext as Record<string, unknown>)) {
+    if (name && containsJSX(body, fileContext as unknown as Record<string, unknown>)) {
       addToSet(name, foundItems.components, elements.components);
     }
     return;
@@ -157,7 +157,7 @@ function processReactDecl(
         const name = (d.id as ASTNode | undefined)?.name as string | undefined;
         const init = d.init as ASTNode | undefined;
         if (name && init?.type === 'ArrowFunctionExpression') {
-          if (containsJSX(init.body as unknown, fileContext as Record<string, unknown>)) {
+          if (containsJSX(init.body as unknown, fileContext as unknown as Record<string, unknown>)) {
             addToSet(name, foundItems.components, elements.components);
           }
         }
@@ -200,7 +200,7 @@ function processReactDecl(
       if (fnType === 'FunctionExpression' || fnType === 'ArrowFunctionExpression') {
         const name = (fn.id as ASTNode | undefined)?.name as string | undefined;
         const body = fn.body as unknown;
-        if (name && containsJSX(body, fileContext as Record<string, unknown>)) {
+        if (name && containsJSX(body, fileContext as unknown as Record<string, unknown>)) {
           addToSet(name, foundItems.components, elements.components);
         }
       }

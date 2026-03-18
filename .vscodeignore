@@ -4,4 +4,6 @@ src/
 *.ts
 !out/**
 .vscode/
-node_modules/
+.gitignore
+vitest.config.ts
+tsconfig.json

@@ -4,11 +4,15 @@
   "description": "Scan a VS Code workspace and generate a merfolk.md diagram",
   "version": "0.0.1",
   "publisher": "ma-cook",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ma-cook/Merfolk-plugin"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": ["Other"],
-  "activationEvents": [],
+  "activationEvents": ["onCommand:merfolk.generate"],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -28,6 +32,7 @@
     "@babel/parser": "^7.23.6"
   },
   "devDependencies": {
+    "@types/node": "^20.10.0",
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^2.3.8",
     "@vscode/vsce": "^2.22.0",
