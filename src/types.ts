@@ -70,6 +70,12 @@ export interface InternalHelperComponent {
   label: string; // e.g. "internal"
 }
 
+// Internal hook info — a hook defined inside (or alongside) a component file
+export interface InternalHookInfo {
+  parent: string;
+  parentType: 'component' | 'hook';
+}
+
 // Collected elements across the entire scan
 export interface Elements {
   components: string[];
@@ -87,6 +93,9 @@ export interface Elements {
   fileContainers: Map<string, FileContainerInfo>; // key = filePath
   internalHelperComponents: InternalHelperComponent[];
   rawCallSites: RawCallSite[];                     // per-call-site (NOT deduplicated)
+  nextjsRouteMap: Map<string, NextjsRouteInfo>;    // key = filePath (Next.js only)
+  internalHooks: Map<string, InternalHookInfo>;    // hookName → info
+  filesNeedingSuffix: Set<string>;                 // names that must get _file suffix to avoid collisions
 }
 
 // Track what's already found to avoid duplicates

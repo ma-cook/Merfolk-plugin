@@ -44,6 +44,9 @@ export function activate(context: ExtensionContext): void {
           fileContainers: new Map(),
           internalHelperComponents: [],
           rawCallSites: [],
+          nextjsRouteMap: new Map(),
+          internalHooks: new Map(),
+          filesNeedingSuffix: new Set(),
         };
 
         const foundItems: FoundItems = {

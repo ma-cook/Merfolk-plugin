@@ -17,6 +17,9 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     fileContainers: new Map(),
     internalHelperComponents: [],
     rawCallSites: [],
+    nextjsRouteMap: new Map(),
+    internalHooks: new Map(),
+    filesNeedingSuffix: new Set(),
     ...overrides,
   };
 }
@@ -416,5 +419,207 @@ describe('generateMerfolkMarkdown', () => {
       'react'
     );
     expect(result).not.toContain('unknownFunction');
+  });
+
+  // Fix #6: MemberExpression service method call two-line chains
+  it('Fix #6: emits two-line chain for service method calls via MemberExpression', () => {
+    const containers = new Map();
+    containers.set('/src/services/apiService.ts', {
+      type: 'Service',
+      functions: new Set(['fetchData']),
+      nodeId: 'apiService',
+      displayName: 'apiService',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['App'],
+        rawCallSites: [
+          { caller: 'App', calleeName: 'apiService', method: '.fetchData()' },
+        ],
+        fileContainers: containers,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Function Call Relationships');
+    expect(result).toContain('App --> apiService : "calls fetchData"');
+    expect(result).toContain('apiService --> fetchData : "receives"');
+  });
+
+  it('Fix #6: emits two-line chain with _file container nodeId when name collides', () => {
+    const containers = new Map();
+    containers.set('/src/services/helper.ts', {
+      type: 'Service',
+      functions: new Set(['process']),
+      nodeId: 'helper_file',
+      displayName: 'helper',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['App'],
+        functions: ['helper'], // causes collision → container gets _file suffix
+        rawCallSites: [
+          { caller: 'App', calleeName: 'helper', method: '.process()' },
+        ],
+        fileContainers: containers,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('App --> helper_file : "calls process"');
+    expect(result).toContain('helper_file --> process : "receives"');
+  });
+
+  it('Fix #6: store .getState() method calls remain as single-line (unchanged)', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        stores: ['useStore'],
+        components: ['PlaneMesh'],
+        rawCallSites: [
+          { caller: 'PlaneMesh', calleeName: 'useStore', method: '.getState()' },
+        ],
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('PlaneMesh --> useStore : ".getState()"');
+    // Store method call is single-line — no "receives" second line
+    const lines = result.split('\n');
+    const idx = lines.findIndex(l => l.includes('.getState()'));
+    expect(lines[idx + 1]).not.toContain('receives');
+  });
+
+  it('Fix #6: skips service method calls where no matching container is found', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['App'],
+        rawCallSites: [
+          { caller: 'App', calleeName: 'unknownService', method: '.doSomething()' },
+        ],
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).not.toContain('unknownService');
+  });
+
+  // Fix #8: Next.js Route Hierarchy
+  it('Fix #8: emits %% Next.js Route Hierarchy section for nextjs repoType', () => {
+    const routeMap = new Map();
+    routeMap.set('/app/page.tsx', {
+      segment: '',
+      routePath: '/',
+      parentRoutePath: '/',
+      isLayout: false,
+      isPage: true,
+      isLoading: false,
+      isError: false,
+      isNotFound: false,
+      isAppShell: false,
+      isDocument: false,
+      isMiddleware: false,
+      isApi: false,
+      filePath: '/app/page.tsx',
+    });
+    routeMap.set('/app/dashboard/page.tsx', {
+      segment: 'dashboard',
+      routePath: '/dashboard',
+      parentRoutePath: '/',
+      isLayout: false,
+      isPage: true,
+      isLoading: false,
+      isError: false,
+      isNotFound: false,
+      isAppShell: false,
+      isDocument: false,
+      isMiddleware: false,
+      isApi: false,
+      filePath: '/app/dashboard/page.tsx',
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({ nextjsRouteMap: routeMap }),
+      'my-next-app',
+      'nextjs'
+    );
+    expect(result).toContain('%% Next.js Route Hierarchy');
+    expect(result).toContain('root{Route: /}');
+    expect(result).toContain('dashboard{Route: /dashboard}');
+    expect(result).toContain('root --> dashboard : "contains"');
+  });
+
+  it('Fix #8: does NOT emit Next.js section for non-nextjs repos', () => {
+    const routeMap = new Map();
+    routeMap.set('/app/page.tsx', {
+      segment: '',
+      routePath: '/',
+      parentRoutePath: '/',
+      isLayout: false, isPage: true, isLoading: false, isError: false,
+      isNotFound: false, isAppShell: false, isDocument: false,
+      isMiddleware: false, isApi: false, filePath: '/app/page.tsx',
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({ nextjsRouteMap: routeMap }),
+      'my-react-app',
+      'react'
+    );
+    expect(result).not.toContain('%% Next.js Route Hierarchy');
+  });
+
+  it('Fix #8: emits nested route connections for multi-level routes', () => {
+    const routeMap = new Map();
+    routeMap.set('/app/dashboard/settings/page.tsx', {
+      segment: 'settings',
+      routePath: '/dashboard/settings',
+      parentRoutePath: '/dashboard',
+      isLayout: false, isPage: true, isLoading: false, isError: false,
+      isNotFound: false, isAppShell: false, isDocument: false,
+      isMiddleware: false, isApi: false,
+      filePath: '/app/dashboard/settings/page.tsx',
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({ nextjsRouteMap: routeMap }),
+      'app',
+      'nextjs'
+    );
+    expect(result).toContain('dashboard_settings{Route: /dashboard/settings}');
+    expect(result).toContain('dashboard --> dashboard_settings : "contains"');
+  });
+
+  it('Fix #8: does not emit Next.js section when nextjsRouteMap is empty', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ nextjsRouteMap: new Map() }),
+      'app',
+      'nextjs'
+    );
+    expect(result).not.toContain('%% Next.js Route Hierarchy');
+  });
+
+  // Fix #9: filesNeedingSuffix for hook nodes
+  it('Fix #9: appends _file suffix to hook node IDs in filesNeedingSuffix', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        hooks: ['useTheme'],
+        filesNeedingSuffix: new Set(['useTheme']),
+      }),
+      'repo',
+      'react'
+    );
+    // The node ID gets _file suffix but the display label keeps the original name
+    expect(result).toContain('useTheme_file[Function: useTheme]');
+    expect(result).not.toContain('useTheme[Function: useTheme]');
+  });
+
+  it('Fix #9: hooks NOT in filesNeedingSuffix use their original name', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        hooks: ['useAuth'],
+        filesNeedingSuffix: new Set(),
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('useAuth[Function: useAuth]');
   });
 });

@@ -222,6 +222,9 @@ function walkNodeForJSX(
           if ((attr.type as string) === 'JSXAttribute') {
             const propName = (attr.name as ASTNode)?.name as string | undefined;
             if (propName) propNames.push(propName);
+          } else if ((attr.type as string) === 'JSXSpreadAttribute') {
+            const argName = (attr.argument as ASTNode)?.name as string | undefined;
+            if (argName) propNames.push(`...${argName}`);
           }
         }
       }
@@ -323,12 +326,21 @@ function deepWalkForCallSites(
           : undefined;
         const propName = prop?.name as string | undefined;
 
-        if (objName && (propName === 'getState' || propName === 'setState')) {
-          elements.rawCallSites.push({
-            caller: callerName,
-            calleeName: objName,
-            method: `.${propName}()`,
-          });
+        if (objName && propName) {
+          if (propName === 'getState' || propName === 'setState') {
+            elements.rawCallSites.push({
+              caller: callerName,
+              calleeName: objName,
+              method: `.${propName}()`,
+            });
+          } else if (!SKIP_CALL_NAMES.has(objName) && !objName.startsWith('use')) {
+            // Service/utility method call (e.g. apiService.fetchData())
+            elements.rawCallSites.push({
+              caller: callerName,
+              calleeName: objName,
+              method: `.${propName}()`,
+            });
+          }
         }
       }
     }
@@ -449,6 +461,11 @@ function analyzeComponentBody(
               destructured,
               label,
             });
+            // Fix #9: track hooks that share the same name as their host component
+            if (calleeName === componentName) {
+              elements.internalHooks.set(calleeName, { parent: componentName, parentType: 'component' });
+              elements.filesNeedingSuffix.add(componentName);
+            }
           }
         } else if (
           (initType === 'ArrowFunctionExpression' || initType === 'FunctionExpression') &&
@@ -494,6 +511,51 @@ function analyzeComponentBody(
 // ---------------------------------------------------------------------------
 // traverseReactAST — delegates to vanilla then does a React-specific pass
 // ---------------------------------------------------------------------------
+
+// Fix #8: Build NextjsRouteInfo from a file path inside the app/ directory.
+function buildNextjsRouteInfo(filePath: string): import('../types').NextjsRouteInfo | null {
+  const normalized = filePath.replace(/\\/g, '/');
+  const appMatch = /\/app\/(.+)$/.exec(normalized);
+  if (!appMatch) return null;
+
+  const relativePath = appMatch[1]; // e.g. "dashboard/settings/page.tsx"
+  const parts = relativePath.split('/');
+  const fileName = parts[parts.length - 1];
+  const baseName = fileName.replace(/\.[^.]+$/, ''); // strip extension
+
+  const isPage = baseName === 'page';
+  const isLayout = baseName === 'layout';
+  const isLoading = baseName === 'loading';
+  const isError = baseName === 'error';
+  const isNotFound = baseName === 'not-found';
+  const isApi = baseName === 'route';
+
+  // Route segments: directories only, excluding route groups ((...)) and parallel routes (@...)
+  const segments = parts
+    .slice(0, -1)
+    .filter(s => !s.startsWith('(') && !s.startsWith('@') && s.length > 0);
+
+  const routePath = segments.length > 0 ? '/' + segments.join('/') : '/';
+  const parentSegments = segments.slice(0, -1);
+  const parentRoutePath = parentSegments.length > 0 ? '/' + parentSegments.join('/') : '/';
+  const segment = segments[segments.length - 1] ?? '';
+
+  return {
+    segment,
+    routePath,
+    parentRoutePath,
+    isLayout,
+    isPage,
+    isLoading,
+    isError,
+    isNotFound,
+    isAppShell: false,
+    isDocument: false,
+    isMiddleware: false,
+    isApi,
+    filePath,
+  };
+}
 
 function processReactDecl(
   decl: ASTNode,
@@ -651,6 +713,26 @@ export function traverseReactAST(
           });
         }
       }
+    }
+  }
+
+  // Fix #9: detect hooks in hook files whose name matches the file stem.
+  if (fileContext.isHook || fileContext.isComposable) {
+    const stem = filePath.replace(/\\/g, '/').split('/').pop()?.replace(/\.[^.]+$/, '') ?? '';
+    if (stem) {
+      for (const hookName of foundItems.hooks) {
+        if (hookName === stem && !elements.internalHooks.has(hookName)) {
+          elements.internalHooks.set(hookName, { parent: stem, parentType: 'hook' });
+        }
+      }
+    }
+  }
+
+  // Fix #8: record Next.js route file info.
+  if (fileContext.isNextRoute) {
+    const routeInfo = buildNextjsRouteInfo(filePath);
+    if (routeInfo) {
+      elements.nextjsRouteMap.set(filePath, routeInfo);
     }
   }
 }

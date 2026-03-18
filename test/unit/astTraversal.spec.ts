@@ -22,6 +22,9 @@ function makeElements(): Elements {
     fileContainers: new Map(),
     internalHelperComponents: [],
     rawCallSites: [],
+    nextjsRouteMap: new Map(),
+    internalHooks: new Map(),
+    filesNeedingSuffix: new Set(),
   };
 }
 
@@ -1252,5 +1255,410 @@ describe('deep call-site traversal (rawCallSites)', () => {
     expect(site).toBeDefined();
     expect(site?.caller).toBe('SphereRenderer');
     expect(site?.calleeName).toBe('useStore');
+  });
+
+  it('Fix #6: records MemberExpression service method calls with .method() label', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'App' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'CallExpression',
+                      callee: {
+                        type: 'MemberExpression',
+                        object: { type: 'Identifier', name: 'apiService' },
+                        property: { type: 'Identifier', name: 'fetchData' },
+                      },
+                      arguments: [],
+                    },
+                  },
+                  {
+                    type: 'ReturnStatement',
+                    argument: { type: 'JSXElement' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const site = elements.rawCallSites.find(s => s.calleeName === 'apiService');
+    expect(site).toBeDefined();
+    expect(site?.method).toBe('.fetchData()');
+    expect(site?.caller).toBe('App');
+  });
+
+  it('Fix #6: does NOT record use-prefixed objects as MemberExpression call sites', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'App' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'CallExpression',
+                      callee: {
+                        type: 'MemberExpression',
+                        object: { type: 'Identifier', name: 'useStore' },
+                        property: { type: 'Identifier', name: 'someMethod' },
+                      },
+                      arguments: [],
+                    },
+                  },
+                  {
+                    type: 'ReturnStatement',
+                    argument: { type: 'JSXElement' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    // use-prefixed objects should not be recorded as service calls (only as getState/setState)
+    const site = elements.rawCallSites.find(
+      s => s.calleeName === 'useStore' && s.method === '.someMethod()'
+    );
+    expect(site).toBeUndefined();
+  });
+});
+
+describe('Fix #7: JSX spread attribute detection', () => {
+  it('detects JSXSpreadAttribute and adds ...spreadName to props', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'Parent' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ReturnStatement',
+                    argument: {
+                      type: 'JSXElement',
+                      openingElement: {
+                        type: 'JSXOpeningElement',
+                        name: { type: 'JSXIdentifier', name: 'Child' },
+                        attributes: [
+                          {
+                            type: 'JSXSpreadAttribute',
+                            argument: { type: 'Identifier', name: 'childProps' },
+                          },
+                        ],
+                      },
+                      children: [],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/Parent.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rel = elements.componentRelationships.find(
+      r => r.parent === 'Parent' && r.child === 'Child'
+    );
+    expect(rel).toBeDefined();
+    expect(rel?.props).toContain('...childProps');
+  });
+
+  it('combines regular props and spread attributes together', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'Wrapper' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ReturnStatement',
+                    argument: {
+                      type: 'JSXElement',
+                      openingElement: {
+                        type: 'JSXOpeningElement',
+                        name: { type: 'JSXIdentifier', name: 'Button' },
+                        attributes: [
+                          {
+                            type: 'JSXAttribute',
+                            name: { name: 'onClick' },
+                            value: null,
+                          },
+                          {
+                            type: 'JSXSpreadAttribute',
+                            argument: { type: 'Identifier', name: 'rest' },
+                          },
+                        ],
+                      },
+                      children: [],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/Wrapper.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rel = elements.componentRelationships.find(
+      r => r.parent === 'Wrapper' && r.child === 'Button'
+    );
+    expect(rel).toBeDefined();
+    expect(rel?.props).toContain('onClick');
+    expect(rel?.props).toContain('...rest');
+  });
+});
+
+describe('Fix #8: Next.js route map detection', () => {
+  it('detects page.tsx in app/ directory and records route info', () => {
+    const ast = {
+      type: 'File',
+      program: { type: 'Program', body: [] },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      ast,
+      '/project/app/dashboard/page.tsx',
+      makeFileContext({ isNextRoute: true }),
+      elements,
+      foundItems
+    );
+    expect(elements.nextjsRouteMap.size).toBe(1);
+    const info = [...elements.nextjsRouteMap.values()][0];
+    expect(info.isPage).toBe(true);
+    expect(info.routePath).toBe('/dashboard');
+    expect(info.parentRoutePath).toBe('/');
+    expect(info.segment).toBe('dashboard');
+  });
+
+  it('detects layout.tsx and marks isLayout = true', () => {
+    const ast = {
+      type: 'File',
+      program: { type: 'Program', body: [] },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      ast,
+      '/project/app/layout.tsx',
+      makeFileContext({ isNextRoute: true }),
+      elements,
+      foundItems
+    );
+    const info = [...elements.nextjsRouteMap.values()][0];
+    expect(info).toBeDefined();
+    expect(info.isLayout).toBe(true);
+    expect(info.routePath).toBe('/');
+  });
+
+  it('detects nested route segments correctly', () => {
+    const ast = {
+      type: 'File',
+      program: { type: 'Program', body: [] },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      ast,
+      '/project/app/dashboard/settings/page.tsx',
+      makeFileContext({ isNextRoute: true }),
+      elements,
+      foundItems
+    );
+    const info = [...elements.nextjsRouteMap.values()][0];
+    expect(info.routePath).toBe('/dashboard/settings');
+    expect(info.parentRoutePath).toBe('/dashboard');
+    expect(info.segment).toBe('settings');
+  });
+
+  it('detects API route.ts and marks isApi = true', () => {
+    const ast = {
+      type: 'File',
+      program: { type: 'Program', body: [] },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      ast,
+      '/project/app/api/users/route.ts',
+      makeFileContext({ isNextRoute: true }),
+      elements,
+      foundItems
+    );
+    const info = [...elements.nextjsRouteMap.values()][0];
+    expect(info.isApi).toBe(true);
+    expect(info.routePath).toBe('/api/users');
+  });
+
+  it('strips route group segments ((...)) from route path', () => {
+    const ast = {
+      type: 'File',
+      program: { type: 'Program', body: [] },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      ast,
+      '/project/app/(auth)/login/page.tsx',
+      makeFileContext({ isNextRoute: true }),
+      elements,
+      foundItems
+    );
+    const info = [...elements.nextjsRouteMap.values()][0];
+    expect(info.routePath).toBe('/login');
+    expect(info.routePath).not.toContain('(auth)');
+  });
+
+  it('does NOT add route info when isNextRoute is false', () => {
+    const ast = {
+      type: 'File',
+      program: { type: 'Program', body: [] },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      ast,
+      '/project/app/dashboard/page.tsx',
+      makeFileContext({ isNextRoute: false }),
+      elements,
+      foundItems
+    );
+    expect(elements.nextjsRouteMap.size).toBe(0);
+  });
+});
+
+describe('Fix #9: internalHooks and filesNeedingSuffix', () => {
+  it('tracks hook in hook file where hookName === file stem', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'useTheme' },
+              body: { type: 'BlockStatement', body: [] },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      ast,
+      'src/hooks/useTheme.ts',
+      makeFileContext({ isHook: true }),
+      elements,
+      foundItems
+    );
+    expect(elements.internalHooks.has('useTheme')).toBe(true);
+    const info = elements.internalHooks.get('useTheme');
+    expect(info?.parentType).toBe('hook');
+    expect(info?.parent).toBe('useTheme');
+  });
+
+  it('adds component to filesNeedingSuffix when hook name matches component name', () => {
+    // This tests the analyzeComponentBody path: if calleeName === componentName
+    // Build AST where a component named useTheme calls useTheme() inside
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'useTheme' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'VariableDeclaration',
+                    declarations: [
+                      {
+                        type: 'VariableDeclarator',
+                        id: { name: 'result' },
+                        init: {
+                          type: 'CallExpression',
+                          callee: { type: 'Identifier', name: 'useTheme' },
+                          arguments: [],
+                        },
+                      },
+                    ],
+                  },
+                  {
+                    type: 'ReturnStatement',
+                    argument: { type: 'JSXElement' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(
+      ast,
+      'src/components/useTheme.tsx',
+      makeFileContext({ isComponent: true }),
+      elements,
+      foundItems
+    );
+    // When component name === hook call name, filesNeedingSuffix should be populated
+    expect(elements.filesNeedingSuffix.has('useTheme')).toBe(true);
+    expect(elements.internalHooks.has('useTheme')).toBe(true);
   });
 });

@@ -19,6 +19,12 @@ function formatProps(props: string[]): string {
   return `${props.slice(0, 3).join(', ')}...`;
 }
 
+/** Sanitize a route path to a valid Merfolk node ID. */
+function routeToNodeId(routePath: string): string {
+  if (routePath === '/') return 'root';
+  return sanitizeNodeId(routePath.replace(/^\//, '').replace(/\//g, '_'));
+}
+
 export function generateMerfolkMarkdown(
   elements: Elements,
   repoName: string,
@@ -73,6 +79,15 @@ export function generateMerfolkMarkdown(
     }
   }
 
+  // 7. Build lookup: container displayName → nodeId (for MemberExpression method calls)
+  const displayNameToContainerNodeId = new Map<string, string>();
+  for (const { nodeId, info } of resolvedContainers) {
+    displayNameToContainerNodeId.set(info.displayName, nodeId);
+  }
+
+  // 8. filesNeedingSuffix set (names that must use _file suffix to avoid node ID collisions)
+  const filesNeedingSuffix = elements.filesNeedingSuffix ?? new Set<string>();
+
   const lines: string[] = [];
 
   // Header (inside code fence per foldspace-diagram.md format)
@@ -118,7 +133,8 @@ export function generateMerfolkMarkdown(
   if (hooks.length > 0) {
     lines.push('%% Hooks');
     for (const hook of hooks) {
-      lines.push(`${hook}[Function: ${hook}]`);
+      const id = filesNeedingSuffix.has(hook) ? `${hook}_file` : hook;
+      lines.push(`${id}[Function: ${hook}]`);
     }
     lines.push('');
   }
@@ -270,9 +286,17 @@ export function generateMerfolkMarkdown(
   const callRelLines: string[] = [];
   for (const site of rawCallSites) {
     if (site.method) {
-      // Store method call: single-line entry
       if (storeSet.has(site.calleeName)) {
+        // Store method call: single-line entry
         callRelLines.push(`${site.caller} --> ${site.calleeName} : "${site.method}"`);
+      } else {
+        // Service/utility method call: two-line chain through file container
+        const containerNodeId = displayNameToContainerNodeId.get(site.calleeName);
+        if (containerNodeId) {
+          const methodName = site.method.replace(/^\./, '').replace(/\(\)$/, '');
+          callRelLines.push(`${site.caller} --> ${containerNodeId} : "calls ${methodName}"`);
+          callRelLines.push(`${containerNodeId} --> ${methodName} : "receives"`);
+        }
       }
     } else {
       // Regular function call: two-line chain
@@ -286,6 +310,55 @@ export function generateMerfolkMarkdown(
   if (callRelLines.length > 0) {
     lines.push('%% Function Call Relationships');
     lines.push(...callRelLines);
+    lines.push('');
+  }
+
+  // %% Next.js Route Hierarchy
+  const nextjsRouteMap = elements.nextjsRouteMap ?? new Map();
+  if (repoType === 'nextjs' && nextjsRouteMap.size > 0) {
+    lines.push('%% Next.js Route Hierarchy');
+
+    // Collect unique route paths and their types
+    const routePathTypes = new Map<string, Set<string>>();
+    for (const [, info] of nextjsRouteMap) {
+      if (!routePathTypes.has(info.routePath)) {
+        routePathTypes.set(info.routePath, new Set());
+      }
+      const types = routePathTypes.get(info.routePath)!;
+      if (info.isPage) types.add('page');
+      if (info.isLayout) types.add('layout');
+      if (info.isApi) types.add('api');
+      if (info.isLoading) types.add('loading');
+      if (info.isError) types.add('error');
+    }
+
+    // Emit root node
+    lines.push('root{Route: /}');
+
+    // Emit route nodes (skip root)
+    const seenRoutes = new Set<string>(['/']);
+    for (const [routePath] of routePathTypes) {
+      if (routePath === '/') continue;
+      if (!seenRoutes.has(routePath)) {
+        seenRoutes.add(routePath);
+        const nodeId = routeToNodeId(routePath);
+        lines.push(`${nodeId}{Route: ${routePath}}`);
+      }
+    }
+
+    // Emit parent-child containment connections
+    const seenRels = new Set<string>();
+    for (const [, info] of nextjsRouteMap) {
+      if (info.routePath === info.parentRoutePath) continue;
+      const childNodeId = routeToNodeId(info.routePath);
+      const parentNodeId = routeToNodeId(info.parentRoutePath);
+      const relKey = `${parentNodeId}|${childNodeId}`;
+      if (!seenRels.has(relKey)) {
+        seenRels.add(relKey);
+        lines.push(`${parentNodeId} --> ${childNodeId} : "contains"`);
+      }
+    }
+
     lines.push('');
   }
 
