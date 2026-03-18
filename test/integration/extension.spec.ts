@@ -27,7 +27,12 @@ describe('Merfolk Plugin E2E', () => {
     expect(repoType).toBe('react');
     expect(files.length).toBeGreaterThan(0);
     const output = generateMerfolkMarkdown(
-      { components: [], functions: [], hooks: [], services: [], stores: [], utilities: [], imports: { libraries: [] } },
+      {
+        components: [], functions: [], hooks: [], services: [], stores: [], utilities: [],
+        imports: { libraries: [] },
+        componentInternalFunctions: [], componentRelationships: [], componentDependencies: [],
+        fileContainers: new Map(), internalHelperComponents: [],
+      },
       'react-project',
       repoType
     );
@@ -97,7 +102,12 @@ describe('Merfolk Plugin E2E', () => {
     const files = await scanWorkspace(rootPath);
     const repoType = await detectRepoType(rootPath);
     const output = generateMerfolkMarkdown(
-      { components: [], functions: [], hooks: [], services: [], stores: [], utilities: [], imports: { libraries: [] } },
+      {
+        components: [], functions: [], hooks: [], services: [], stores: [], utilities: [],
+        imports: { libraries: [] },
+        componentInternalFunctions: [], componentRelationships: [], componentDependencies: [],
+        fileContainers: new Map(), internalHelperComponents: [],
+      },
       'react-project',
       repoType
     );

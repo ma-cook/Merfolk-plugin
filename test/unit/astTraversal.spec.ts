@@ -16,6 +16,11 @@ function makeElements(): Elements {
     stores: [],
     utilities: [],
     imports: { libraries: [] },
+    componentInternalFunctions: [],
+    componentRelationships: [],
+    componentDependencies: [],
+    fileContainers: new Map(),
+    internalHelperComponents: [],
   };
 }
 

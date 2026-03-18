@@ -40,6 +40,36 @@ export interface FileContext {
   isRouter: boolean;
 }
 
+// Component internal function (defined inside a component body)
+export interface ComponentInternalFunction {
+  componentName: string;
+  functionName: string; // prefixed: e.g. "customcameraMemoizedCameraPosition"
+  label: string; // "internal function", "render helper", "update helper", "calculation helper", "boolean check", "getter function"
+}
+
+// Component rendering relationship (parent renders child with props)
+export interface ComponentRelationship {
+  parent: string;
+  child: string;
+  props: string[]; // prop names passed, or ["uses"] if no props
+}
+
+// Component dependency on a hook/store
+export interface ComponentDependencyRelation {
+  component: string;
+  target: string; // hook/store function name
+  targetNodeId: string; // resolved file container nodeId or direct name
+  destructured: string[]; // values destructured, e.g. ["user", "isAuthenticated"]
+  label: string; // "uses store", "uses hook", "{user}", etc.
+}
+
+// Internal helper component relationship (both components in same file)
+export interface InternalHelperComponent {
+  parent: string;
+  child: string;
+  label: string; // e.g. "internal"
+}
+
 // Collected elements across the entire scan
 export interface Elements {
   components: string[];
@@ -51,6 +81,11 @@ export interface Elements {
   imports: {
     libraries: string[];
   };
+  componentInternalFunctions: ComponentInternalFunction[];
+  componentRelationships: ComponentRelationship[];
+  componentDependencies: ComponentDependencyRelation[];
+  fileContainers: Map<string, FileContainerInfo>; // key = filePath
+  internalHelperComponents: InternalHelperComponent[];
 }
 
 // Track what's already found to avoid duplicates
@@ -65,9 +100,11 @@ export interface FoundItems {
 
 // File container info
 export interface FileContainerInfo {
-  type: string;
+  type: string; // 'Hook', 'Service', 'Store', 'Function'
   functions: Set<string>;
-  nodeId?: string;
+  nodeId: string; // provisional stem; resolved to final ID in generator
+  displayName: string; // filename stem
+  isBackend: boolean;
 }
 
 // Function call relationship
