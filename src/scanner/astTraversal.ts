@@ -1,4 +1,4 @@
-import type { Elements, FoundItems, FileContext } from '../types';
+import type { Elements, FoundItems, FileContext, ComponentInternalFunction } from '../types';
 import { containsJSX } from './fileAnalyzer';
 import { parse } from '@babel/parser';
 
@@ -19,16 +19,59 @@ function addToSet(
   }
 }
 
+/** Add a function to its file container (non-component files only). */
+function addToFileContainer(
+  filePath: string,
+  funcName: string,
+  fileContext: FileContext,
+  elements: Elements
+): void {
+  if (fileContext.isComponent) return;
+
+  const base = filePath.replace(/\\/g, '/').split('/').pop() ?? '';
+  const stem = base.replace(/\.[^.]+$/, '');
+  if (!stem) return;
+
+  let containerType: string;
+  let isBackend = false;
+
+  if (fileContext.isHook || fileContext.isComposable) {
+    containerType = 'Hook';
+  } else if (fileContext.isBackend) {
+    containerType = 'Service';
+    isBackend = true;
+  } else if (fileContext.isService || fileContext.isModel) {
+    containerType = 'Service';
+  } else if (fileContext.isStore) {
+    containerType = 'Store';
+  } else {
+    containerType = 'Function';
+  }
+
+  if (!elements.fileContainers.has(filePath)) {
+    elements.fileContainers.set(filePath, {
+      type: containerType,
+      functions: new Set(),
+      nodeId: stem,
+      displayName: stem,
+      isBackend,
+    });
+  }
+  elements.fileContainers.get(filePath)!.functions.add(funcName);
+}
+
 function classifyName(
   name: string,
   declarationType: string,
   fileContext: FileContext,
   elements: Elements,
-  foundItems: FoundItems
+  foundItems: FoundItems,
+  filePath?: string
 ): void {
   // Class declarations always go to services (even in util context)
   if (declarationType === 'ClassDeclaration') {
     addToSet(name, foundItems.services, elements.services);
+    if (filePath) addToFileContainer(filePath, name, fileContext, elements);
     return;
   }
   if (fileContext.isService || fileContext.isModel) {
@@ -42,13 +85,15 @@ function classifyName(
   } else {
     addToSet(name, foundItems.functions, elements.functions);
   }
+  if (filePath) addToFileContainer(filePath, name, fileContext, elements);
 }
 
 function processVanillaNode(
   node: ASTNode,
   fileContext: FileContext,
   elements: Elements,
-  foundItems: FoundItems
+  foundItems: FoundItems,
+  filePath?: string
 ): void {
   const type = node.type as string;
 
@@ -75,12 +120,12 @@ function processVanillaNode(
       if (decls) {
         for (const d of decls) {
           const name = (d.id as ASTNode | undefined)?.name as string | undefined;
-          if (name) classifyName(name, 'variable', fileContext, elements, foundItems);
+          if (name) classifyName(name, 'variable', fileContext, elements, foundItems, filePath);
         }
       }
     } else {
       const name = (decl.id as ASTNode | undefined)?.name as string | undefined;
-      if (name) classifyName(name, dt, fileContext, elements, foundItems);
+      if (name) classifyName(name, dt, fileContext, elements, foundItems, filePath);
     }
     return;
   }
@@ -91,20 +136,20 @@ function processVanillaNode(
     const dt = decl.type as string;
     if (dt === 'FunctionDeclaration' || dt === 'ClassDeclaration') {
       const name = (decl.id as ASTNode | undefined)?.name as string | undefined;
-      if (name) classifyName(name, dt, fileContext, elements, foundItems);
+      if (name) classifyName(name, dt, fileContext, elements, foundItems, filePath);
     }
     return;
   }
 
   if (type === 'FunctionDeclaration') {
     const name = (node.id as ASTNode | undefined)?.name as string | undefined;
-    if (name) classifyName(name, 'FunctionDeclaration', fileContext, elements, foundItems);
+    if (name) classifyName(name, 'FunctionDeclaration', fileContext, elements, foundItems, filePath);
     return;
   }
 
   if (type === 'ClassDeclaration') {
     const name = (node.id as ASTNode | undefined)?.name as string | undefined;
-    if (name) classifyName(name, 'ClassDeclaration', fileContext, elements, foundItems);
+    if (name) classifyName(name, 'ClassDeclaration', fileContext, elements, foundItems, filePath);
     return;
   }
   // ExportAllDeclaration, VariableDeclaration (CommonJS require), etc. — no-op
@@ -116,7 +161,7 @@ function processVanillaNode(
 
 export function traverseVanillaAST(
   ast: unknown,
-  _filePath: string,
+  filePath: string,
   fileContext: FileContext,
   elements: Elements,
   foundItems: FoundItems
@@ -125,7 +170,217 @@ export function traverseVanillaAST(
   const body = (a.program as ASTNode | undefined)?.body as ASTNode[] | undefined;
   if (!body) return;
   for (const node of body) {
-    processVanillaNode(node, fileContext, elements, foundItems);
+    processVanillaNode(node, fileContext, elements, foundItems, filePath);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// React component body analysis helpers
+// ---------------------------------------------------------------------------
+
+const REACT_BUILTIN_HOOKS = new Set([
+  'useState', 'useEffect', 'useRef', 'useMemo', 'useCallback',
+  'useContext', 'useReducer', 'useLayoutEffect', 'useImperativeHandle',
+  'useDebugValue', 'useDeferredValue', 'useTransition', 'useId',
+  'useInsertionEffect', 'useSyncExternalStore',
+]);
+
+function getInternalFunctionLabel(name: string, calleeName: string): string {
+  const lower = name.toLowerCase();
+  if (calleeName === 'useMemo') return 'render helper';
+  if (lower.includes('update')) return 'update helper';
+  if (lower.includes('calculate')) return 'calculation helper';
+  if (lower.startsWith('get')) return 'getter function';
+  const isRenderRelated = lower.includes('render') || lower.includes('animate') || lower.includes('memoized');
+  if (calleeName === 'useCallback' && isRenderRelated) return 'render helper';
+  return 'internal function';
+}
+
+/** Walk a JSX tree and collect child component relationships. */
+function walkNodeForJSX(
+  node: unknown,
+  parentComponent: string,
+  elements: Elements,
+  depth: number
+): void {
+  if (!node || typeof node !== 'object' || depth > 25) return;
+  const n = node as ASTNode;
+  const nodeType = n.type as string;
+
+  if (nodeType === 'JSXElement') {
+    const opening = n.openingElement as ASTNode | undefined;
+    const nameNode = opening?.name as ASTNode | undefined;
+    let childName: string | undefined;
+    if ((nameNode?.type as string) === 'JSXIdentifier') {
+      childName = nameNode?.name as string | undefined;
+    }
+    if (childName && /^[A-Z]/.test(childName)) {
+      const attrs = opening?.attributes as ASTNode[] | undefined;
+      const propNames: string[] = [];
+      if (attrs) {
+        for (const attr of attrs) {
+          if ((attr.type as string) === 'JSXAttribute') {
+            const propName = (attr.name as ASTNode)?.name as string | undefined;
+            if (propName) propNames.push(propName);
+          }
+        }
+      }
+      elements.componentRelationships.push({
+        parent: parentComponent,
+        child: childName,
+        props: propNames.length > 0 ? propNames : ['uses'],
+      });
+    }
+    const children = n.children as unknown[] | undefined;
+    if (children) {
+      for (const c of children) walkNodeForJSX(c, parentComponent, elements, depth + 1);
+    }
+    return;
+  }
+
+  if (nodeType === 'JSXFragment') {
+    const children = n.children as unknown[] | undefined;
+    if (children) children.forEach(c => walkNodeForJSX(c, parentComponent, elements, depth + 1));
+    return;
+  }
+
+  if (nodeType === 'JSXExpressionContainer') {
+    walkNodeForJSX(n.expression, parentComponent, elements, depth + 1);
+    return;
+  }
+
+  // Recurse into common statement/expression types
+  const subProps = [
+    'body', 'consequent', 'alternate', 'left', 'right', 'argument',
+    'expression', 'callee', 'arguments', 'elements', 'properties',
+    'declarations', 'init', 'object', 'property',
+  ];
+  for (const prop of subProps) {
+    const val = (n as Record<string, unknown>)[prop];
+    if (!val) continue;
+    if (Array.isArray(val)) {
+      for (const item of val) walkNodeForJSX(item, parentComponent, elements, depth + 1);
+    } else if (typeof val === 'object' && (val as Record<string, unknown>).type) {
+      walkNodeForJSX(val, parentComponent, elements, depth + 1);
+    }
+  }
+}
+
+/**
+ * Extract internal functions and hook dependencies from a component body,
+ * and JSX child relationships from the return path.
+ */
+function analyzeComponentBody(
+  componentName: string,
+  body: ASTNode,
+  elements: Elements
+): void {
+  const blockBody = body.body as ASTNode[] | undefined;
+  if (!Array.isArray(blockBody)) {
+    // Expression body (arrow function returning JSX directly)
+    walkNodeForJSX(body, componentName, elements, 0);
+    return;
+  }
+
+  for (const stmt of blockBody) {
+    const stmtType = stmt.type as string;
+
+    if (stmtType === 'VariableDeclaration') {
+      const decls = stmt.declarations as ASTNode[] | undefined;
+      if (!decls) continue;
+
+      for (const decl of decls) {
+        const id = decl.id as ASTNode | undefined;
+        if (!id) continue;
+        const idType = id.type as string;
+
+        const init = decl.init as ASTNode | undefined;
+        if (!init) continue;
+        const initType = init.type as string;
+
+        if (initType === 'CallExpression') {
+          const callee = init.callee as ASTNode | undefined;
+          let calleeName = callee?.name as string | undefined;
+          if (!calleeName && (callee?.type as string) === 'MemberExpression') {
+            calleeName = (callee!.property as ASTNode)?.name as string | undefined;
+          }
+          if (!calleeName) continue;
+
+          if (calleeName === 'useMemo' || calleeName === 'useCallback') {
+            // Internal memoized/callback function
+            if (idType === 'Identifier') {
+              const varName = id.name as string | undefined;
+              if (varName) {
+                const prefixed = componentName.toLowerCase() +
+                  varName.charAt(0).toUpperCase() + varName.slice(1);
+                const label = getInternalFunctionLabel(varName, calleeName);
+                elements.componentInternalFunctions.push({
+                  componentName,
+                  functionName: prefixed,
+                  label,
+                });
+              }
+            }
+          } else if (calleeName.startsWith('use') && !REACT_BUILTIN_HOOKS.has(calleeName)) {
+            // Custom hook dependency
+            let destructured: string[] = [];
+            if (idType === 'ObjectPattern') {
+              const props = id.properties as ASTNode[] | undefined;
+              if (props) {
+                destructured = props
+                  .map(p => (p.key as ASTNode)?.name as string | undefined)
+                  .filter((s): s is string => typeof s === 'string');
+              }
+            }
+            const label =
+              calleeName === 'useStore'
+                ? 'uses store'
+                : destructured.length > 0
+                  ? `{${destructured.join(', ')}}`
+                  : 'uses hook';
+            elements.componentDependencies.push({
+              component: componentName,
+              target: calleeName,
+              targetNodeId: calleeName,
+              destructured,
+              label,
+            });
+          }
+        } else if (
+          (initType === 'ArrowFunctionExpression' || initType === 'FunctionExpression') &&
+          idType === 'Identifier'
+        ) {
+          const varName = id.name as string | undefined;
+          if (varName && !varName.startsWith('use')) {
+            const prefixed = componentName.toLowerCase() +
+              varName.charAt(0).toUpperCase() + varName.slice(1);
+            const label = getInternalFunctionLabel(varName, 'function');
+            elements.componentInternalFunctions.push({
+              componentName,
+              functionName: prefixed,
+              label,
+            });
+          }
+        }
+      }
+    } else if (stmtType === 'FunctionDeclaration') {
+      const funcName = (stmt.id as ASTNode)?.name as string | undefined;
+      if (funcName && !funcName.startsWith('use')) {
+        const prefixed = componentName.toLowerCase() +
+          funcName.charAt(0).toUpperCase() + funcName.slice(1);
+        const label = getInternalFunctionLabel(funcName, 'function');
+        elements.componentInternalFunctions.push({
+          componentName,
+          functionName: prefixed,
+          label,
+        });
+      }
+    }
+  }
+
+  // Walk the entire body looking for JSX relationships
+  for (const stmt of blockBody) {
+    walkNodeForJSX(stmt, componentName, elements, 0);
   }
 }
 
@@ -146,6 +401,7 @@ function processReactDecl(
     const body = decl.body as unknown;
     if (name && containsJSX(body, fileContext as unknown as Record<string, unknown>)) {
       addToSet(name, foundItems.components, elements.components);
+      analyzeComponentBody(name, body as ASTNode, elements);
     }
     return;
   }
@@ -157,8 +413,10 @@ function processReactDecl(
         const name = (d.id as ASTNode | undefined)?.name as string | undefined;
         const init = d.init as ASTNode | undefined;
         if (name && init?.type === 'ArrowFunctionExpression') {
-          if (containsJSX(init.body as unknown, fileContext as unknown as Record<string, unknown>)) {
+          const arrowBody = init.body as unknown;
+          if (containsJSX(arrowBody, fileContext as unknown as Record<string, unknown>)) {
             addToSet(name, foundItems.components, elements.components);
+            analyzeComponentBody(name, arrowBody as ASTNode, elements);
           }
         }
       }
@@ -202,6 +460,7 @@ function processReactDecl(
         const body = fn.body as unknown;
         if (name && containsJSX(body, fileContext as unknown as Record<string, unknown>)) {
           addToSet(name, foundItems.components, elements.components);
+          analyzeComponentBody(name, body as ASTNode, elements);
         }
       }
     }
@@ -216,6 +475,10 @@ export function traverseReactAST(
   elements: Elements,
   foundItems: FoundItems
 ): void {
+  // Snapshot to detect components added in this file
+  const componentsBefore = new Set(foundItems.components);
+  const relsBefore = elements.componentRelationships.length;
+
   // Base extraction via vanilla traversal
   traverseVanillaAST(ast, filePath, fileContext, elements, foundItems);
 
@@ -255,6 +518,32 @@ export function traverseReactAST(
         }
       }
       continue;
+    }
+  }
+
+  // Detect internal helper components: components added in this file that
+  // appear in JSX relationships added in this file (both parent & child are new).
+  const newComponents = [...foundItems.components].filter(c => !componentsBefore.has(c));
+  if (newComponents.length >= 2) {
+    const newCompSet = new Set(newComponents);
+    const newRels = elements.componentRelationships.slice(relsBefore);
+    const seenHelpers = new Set<string>();
+    for (const rel of newRels) {
+      if (
+        newCompSet.has(rel.parent) &&
+        newCompSet.has(rel.child) &&
+        rel.parent !== rel.child
+      ) {
+        const key = `${rel.parent}|${rel.child}`;
+        if (!seenHelpers.has(key)) {
+          seenHelpers.add(key);
+          elements.internalHelperComponents.push({
+            parent: rel.parent,
+            child: rel.child,
+            label: 'internal',
+          });
+        }
+      }
     }
   }
 }

@@ -11,6 +11,11 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     stores: [],
     utilities: [],
     imports: { libraries: [] },
+    componentInternalFunctions: [],
+    componentRelationships: [],
+    componentDependencies: [],
+    fileContainers: new Map(),
+    internalHelperComponents: [],
     ...overrides,
   };
 }
@@ -54,13 +59,13 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('[[Store: userStore]]');
   });
 
-  it('creates Service nodes with ((Service: name)) syntax', () => {
+  it('creates Service nodes with [Function: name] syntax', () => {
     const result = generateMerfolkMarkdown(
       makeElements({ services: ['ApiService'] }),
       'repo',
       'react'
     );
-    expect(result).toContain('((Service: ApiService))');
+    expect(result).toContain('ApiService[Function: ApiService]');
   });
 
   it('creates Library nodes with <Library: name> syntax', () => {
@@ -72,27 +77,35 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('<Library: lodash>');
   });
 
-  it('creates Hook file containers with [Hook: name] syntax', () => {
+  it('creates Hook nodes with [Function: name] syntax', () => {
     const result = generateMerfolkMarkdown(
       makeElements({ hooks: ['useAuth'] }),
       'repo',
       'react'
     );
-    expect(result).toContain('[Hook: useAuth]');
+    expect(result).toContain('useAuth[Function: useAuth]');
   });
 
-  it('creates dashed arrows for containment (-.->) ', () => {
+  it('creates dashed arrows for component-function relationships (-.->) ', () => {
     const result = generateMerfolkMarkdown(
-      makeElements({ components: ['App'], hooks: ['useAuth'] }),
+      makeElements({
+        components: ['App'],
+        componentInternalFunctions: [
+          { componentName: 'App', functionName: 'appHandleClick', label: 'internal function' },
+        ],
+      }),
       'repo',
       'react'
     );
     expect(result).toContain('-.->')
   });
 
-  it('creates solid arrows for hierarchy (-->)', () => {
+  it('creates solid arrows for component relationships (-->)', () => {
     const result = generateMerfolkMarkdown(
-      makeElements({ components: ['App', 'Button'] }),
+      makeElements({
+        components: ['App', 'Button'],
+        componentRelationships: [{ parent: 'App', child: 'Button', props: ['uses'] }],
+      }),
       'repo',
       'react'
     );
@@ -135,9 +148,9 @@ describe('generateMerfolkMarkdown', () => {
       'repo',
       'react'
     );
-    expect(result).toContain('((Service: apiUtil))');
-    const utilMatches = result.match(/\[Function: apiUtil\]/g) ?? [];
-    expect(utilMatches.length).toBe(0);
+    expect(result).toContain('apiUtil[Function: apiUtil]');
+    const matches = result.match(/apiUtil\[Function: apiUtil\]/g) ?? [];
+    expect(matches.length).toBe(1);
   });
 
   it('filters component relationships to only known components', () => {

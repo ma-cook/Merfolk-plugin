@@ -38,6 +38,11 @@ export function activate(context: ExtensionContext): void {
           stores: [],
           utilities: [],
           imports: { libraries: [] },
+          componentInternalFunctions: [],
+          componentRelationships: [],
+          componentDependencies: [],
+          fileContainers: new Map(),
+          internalHelperComponents: [],
         };
 
         const foundItems: FoundItems = {
