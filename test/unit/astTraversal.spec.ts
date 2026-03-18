@@ -370,6 +370,161 @@ describe('traverseVanillaAST', () => {
     expect(elements.services).toContain('fetchData');
   });
 
+  it('populates fileContainers with function name and container type', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'fetchData' },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/services/api.js', makeFileContext({ isService: true }), elements, foundItems);
+    const container = elements.fileContainers.get('src/services/api.js');
+    expect(container).toBeDefined();
+    expect(container!.type).toBe('Service');
+    expect(container!.functions.has('fetchData')).toBe(true);
+    expect(container!.nodeId).toBe('api');
+    expect(container!.displayName).toBe('api');
+  });
+
+  it('populates fileContainers with Hook type for hook files', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'FunctionDeclaration',
+            id: { name: 'useAuth' },
+            body: { type: 'BlockStatement', body: [] },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/hooks/useAuth.js', makeFileContext({ isHook: true }), elements, foundItems);
+    const container = elements.fileContainers.get('src/hooks/useAuth.js');
+    expect(container).toBeDefined();
+    expect(container!.type).toBe('Hook');
+    expect(container!.functions.has('useAuth')).toBe(true);
+  });
+
+  it('tracks function call sites in non-component function bodies', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'FunctionDeclaration',
+            id: { name: 'fetchData' },
+            body: {
+              type: 'BlockStatement',
+              body: [
+                {
+                  type: 'ExpressionStatement',
+                  expression: {
+                    type: 'CallExpression',
+                    callee: { type: 'Identifier', name: 'parseResponse' },
+                    arguments: [],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/services/api.js', makeFileContext({ isService: true }), elements, foundItems);
+    const site = elements.rawCallSites.find(s => s.calleeName === 'parseResponse');
+    expect(site).toBeDefined();
+    expect(site?.caller).toBe('fetchData');
+  });
+
+  it('tracks call sites in exported function declaration bodies', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'processItems' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'CallExpression',
+                      callee: { type: 'Identifier', name: 'validateItem' },
+                      arguments: [],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/utils/processor.js', makeFileContext({ isUtil: true }), elements, foundItems);
+    const site = elements.rawCallSites.find(s => s.calleeName === 'validateItem');
+    expect(site).toBeDefined();
+    expect(site?.caller).toBe('processItems');
+  });
+
+  it('does NOT track call sites for component files in vanilla traversal', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'FunctionDeclaration',
+            id: { name: 'MyComponent' },
+            body: {
+              type: 'BlockStatement',
+              body: [
+                {
+                  type: 'ExpressionStatement',
+                  expression: {
+                    type: 'CallExpression',
+                    callee: { type: 'Identifier', name: 'helperFn' },
+                    arguments: [],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/components/MyComponent.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    // Component files are handled by traverseReactAST; vanilla should not duplicate
+    const site = elements.rawCallSites.find(s => s.calleeName === 'helperFn');
+    expect(site).toBeUndefined();
+  });
+
   it('upgrades utility to service when class found', () => {
     const ast = {
       type: 'File',
@@ -440,6 +595,25 @@ describe('traversePythonSource', () => {
     expect(elements.imports.libraries).not.toContain('helpers');
   });
 
+  it('tracks relative imports in moduleImportRelationships', () => {
+    const source = 'from .helpers import format_date\nfrom ..models.user import User\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'services/api.py', makeFileContext({ isService: true }), elements, foundItems);
+    const imports = elements.moduleImportRelationships.get('services/api.py');
+    expect(imports).toBeDefined();
+    expect(imports!.has('helpers')).toBe(true);
+    expect(imports!.has('user')).toBe(true);
+  });
+
+  it('does NOT add relative imports to moduleImportRelationships when no relative imports', () => {
+    const source = 'import os\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'main.py', makeFileContext(), elements, foundItems);
+    expect(elements.moduleImportRelationships.has('main.py')).toBe(false);
+  });
+
   it('tracks absolute imports as libraries', () => {
     const source = 'import os\nimport sys\n';
     const elements = makeElements();
@@ -489,6 +663,40 @@ describe('traversePythonSource', () => {
     traversePythonSource(source, 'views/home.py', makeFileContext({ isView: true }), elements, foundItems);
     expect(elements.functions).toContain('home_view');
   });
+
+  it('creates fileContainers entry for Python service files', () => {
+    const source = 'def fetch_users():\n    pass\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'services/api.py', makeFileContext({ isService: true }), elements, foundItems);
+    const container = elements.fileContainers.get('services/api.py');
+    expect(container).toBeDefined();
+    expect(container!.type).toBe('Service');
+    expect(container!.functions.has('fetch_users')).toBe(true);
+    expect(container!.nodeId).toBe('api');
+  });
+
+  it('creates fileContainers entry for Python model files with classes', () => {
+    const source = 'class UserModel:\n    pass\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'models/user.py', makeFileContext({ isModel: true }), elements, foundItems);
+    const container = elements.fileContainers.get('models/user.py');
+    expect(container).toBeDefined();
+    expect(container!.type).toBe('Service');
+    expect(container!.functions.has('UserModel')).toBe(true);
+  });
+
+  it('creates fileContainers entry for Python utility files', () => {
+    const source = 'def format_date(date):\n    pass\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'utils/helpers.py', makeFileContext({ isUtil: true }), elements, foundItems);
+    const container = elements.fileContainers.get('utils/helpers.py');
+    expect(container).toBeDefined();
+    expect(container!.type).toBe('Function');
+    expect(container!.functions.has('format_date')).toBe(true);
+  });
 });
 
 describe('traverseVueSource', () => {
@@ -534,6 +742,29 @@ const count = ref(0)
     expect(elements.components).toContain('Parent');
   });
 
+  it('adds componentRelationships for PascalCase child components in template', () => {
+    const source = `<template><MyButton /><DataTable /></template>
+<script setup></script>`;
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVueSource(source, 'src/components/Parent.vue', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rel = elements.componentRelationships.find(r => r.parent === 'Parent' && r.child === 'MyButton');
+    expect(rel).toBeDefined();
+    expect(rel!.props).toEqual(['uses']);
+    const rel2 = elements.componentRelationships.find(r => r.parent === 'Parent' && r.child === 'DataTable');
+    expect(rel2).toBeDefined();
+  });
+
+  it('deduplicates repeated child component tags in template', () => {
+    const source = `<template><MyButton /><MyButton /></template>
+<script setup></script>`;
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVueSource(source, 'src/components/Parent.vue', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rels = elements.componentRelationships.filter(r => r.parent === 'Parent' && r.child === 'MyButton');
+    expect(rels.length).toBe(1);
+  });
+
   it('scans template for kebab-case child component usage', () => {
     const source = `<template><my-button /></template>
 <script setup></script>`;
@@ -572,6 +803,47 @@ const store = useMainStore()
     const foundItems = makeFoundItems();
     traverseVueSource(source, 'src/components/App.vue', makeFileContext({ isComponent: true }), elements, foundItems);
     expect(elements.components).toContain('App');
+  });
+
+  it('tracks composable calls as componentDependencies in script setup', () => {
+    const source = `<template><div /></template>
+<script setup>
+import { useAuth } from '../composables/useAuth'
+const { user, isAuthenticated } = useAuth()
+</script>`;
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVueSource(source, 'src/components/Profile.vue', makeFileContext({ isComponent: true }), elements, foundItems);
+    const dep = elements.componentDependencies.find(d => d.component === 'Profile' && d.target === 'useAuth');
+    expect(dep).toBeDefined();
+    expect(dep!.targetNodeId).toBe('useAuth');
+  });
+
+  it('tracks multiple composable dependencies from script setup', () => {
+    const source = `<template><div /></template>
+<script setup>
+const store = useMainStore()
+const router = useRouter()
+</script>`;
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVueSource(source, 'src/components/App.vue', makeFileContext({ isComponent: true }), elements, foundItems);
+    const deps = elements.componentDependencies.filter(d => d.component === 'App');
+    expect(deps.some(d => d.target === 'useMainStore')).toBe(true);
+    expect(deps.some(d => d.target === 'useRouter')).toBe(true);
+  });
+
+  it('does not duplicate composable dependencies', () => {
+    const source = `<template><div /></template>
+<script setup>
+const a = useAuth()
+const b = useAuth()
+</script>`;
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVueSource(source, 'src/components/Double.vue', makeFileContext({ isComponent: true }), elements, foundItems);
+    const deps = elements.componentDependencies.filter(d => d.component === 'Double' && d.target === 'useAuth');
+    expect(deps.length).toBe(1);
   });
 
   it('handles files with no script block gracefully', () => {
