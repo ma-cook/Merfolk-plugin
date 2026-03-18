@@ -119,7 +119,7 @@ export function generateMerfolkMarkdown(
     lines.push('');
   }
 
-  // %% Hooks — use [Hook: name] syntax
+  // %% Hooks
   if (hooks.length > 0) {
     lines.push('%% Hooks');
     for (const hook of hooks) {
@@ -128,7 +128,7 @@ export function generateMerfolkMarkdown(
     lines.push('');
   }
 
-  // %% Services — use ((Service: name)) syntax
+  // %% Services
   if (services.length > 0) {
     lines.push('%% Services');
     for (const svc of services) {
