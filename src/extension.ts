@@ -43,6 +43,7 @@ export function activate(context: ExtensionContext): void {
           componentDependencies: [],
           fileContainers: new Map(),
           internalHelperComponents: [],
+          rawCallSites: [],
         };
 
         const foundItems: FoundItems = {

@@ -31,7 +31,7 @@ describe('Merfolk Plugin E2E', () => {
         components: [], functions: [], hooks: [], services: [], stores: [], utilities: [],
         imports: { libraries: [] },
         componentInternalFunctions: [], componentRelationships: [], componentDependencies: [],
-        fileContainers: new Map(), internalHelperComponents: [],
+        fileContainers: new Map(), internalHelperComponents: [], rawCallSites: [],
       },
       'react-project',
       repoType
@@ -106,7 +106,7 @@ describe('Merfolk Plugin E2E', () => {
         components: [], functions: [], hooks: [], services: [], stores: [], utilities: [],
         imports: { libraries: [] },
         componentInternalFunctions: [], componentRelationships: [], componentDependencies: [],
-        fileContainers: new Map(), internalHelperComponents: [],
+        fileContainers: new Map(), internalHelperComponents: [], rawCallSites: [],
       },
       'react-project',
       repoType
