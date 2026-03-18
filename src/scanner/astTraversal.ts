@@ -104,6 +104,17 @@ function processVanillaNode(
         elements.imports.libraries.push(src);
       }
     }
+    // Track relative imports for moduleImportRelationships
+    if (src && src.startsWith('.') && filePath) {
+      const importedBase = src.replace(/\\/g, '/').split('/').pop() ?? '';
+      const stem = importedBase.replace(/\.[^.]+$/, '') || importedBase;
+      if (stem && stem !== '.') {
+        if (!elements.moduleImportRelationships.has(filePath)) {
+          elements.moduleImportRelationships.set(filePath, new Set());
+        }
+        elements.moduleImportRelationships.get(filePath)!.add(stem);
+      }
+    }
     return;
   }
 
@@ -329,6 +340,17 @@ function deepWalkForCallSites(
             calleeName: objName,
             method: `.${propName}()`,
           });
+          // Track setState calls as actions in storeUsageRelationships
+          if (propName === 'setState') {
+            if (!elements.storeUsageRelationships.has(callerName)) {
+              elements.storeUsageRelationships.set(callerName, new Map());
+            }
+            const storeMap = elements.storeUsageRelationships.get(callerName)!;
+            if (!storeMap.has(objName)) {
+              storeMap.set(objName, { properties: new Set(), actions: new Set() });
+            }
+            storeMap.get(objName)!.actions.add('setState');
+          }
         }
       }
     }
@@ -426,7 +448,7 @@ function analyzeComponentBody(
               }
             }
           } else if (calleeName.startsWith('use') && !REACT_BUILTIN_HOOKS.has(calleeName)) {
-            // Custom hook dependency
+            // Custom hook dependency — detect if it's a store hook
             let destructured: string[] = [];
             if (idType === 'ObjectPattern') {
               const props = id.properties as ASTNode[] | undefined;
@@ -436,12 +458,58 @@ function analyzeComponentBody(
                   .filter((s): s is string => typeof s === 'string');
               }
             }
-            const label =
-              calleeName === 'useStore'
-                ? 'uses store'
-                : destructured.length > 0
-                  ? `{${destructured.join(', ')}}`
-                  : 'uses hook';
+
+            // Detect selector-pattern: useStore(state => state.x) → property 'x'
+            const callArgs = init.arguments as ASTNode[] | undefined;
+            const selectorProperties: string[] = [];
+            if (callArgs && callArgs.length > 0) {
+              const selectorArg = callArgs[0] as ASTNode;
+              const selectorArgType = selectorArg.type as string;
+              if (
+                selectorArgType === 'ArrowFunctionExpression' ||
+                selectorArgType === 'FunctionExpression'
+              ) {
+                const selectorBody = selectorArg.body as ASTNode | undefined;
+                if (selectorBody && (selectorBody.type as string) === 'MemberExpression') {
+                  const propName = (selectorBody.property as ASTNode)?.name as string | undefined;
+                  if (propName) selectorProperties.push(propName);
+                }
+              }
+            }
+
+            // Identify store hooks: name ends with 'Store' (e.g. useStore, useObjectsStore)
+            const isStoreHook = /Store$/.test(calleeName);
+
+            if (isStoreHook) {
+              // Track store property usage
+              const storeProperties = [...destructured, ...selectorProperties];
+              if (storeProperties.length > 0) {
+                if (!elements.storeUsageRelationships.has(componentName)) {
+                  elements.storeUsageRelationships.set(componentName, new Map());
+                }
+                const storeMap = elements.storeUsageRelationships.get(componentName)!;
+                if (!storeMap.has(calleeName)) {
+                  storeMap.set(calleeName, { properties: new Set(), actions: new Set() });
+                }
+                const storeInfo = storeMap.get(calleeName)!;
+                for (const prop of storeProperties) storeInfo.properties.add(prop);
+              }
+            } else if (destructured.length > 0) {
+              // Track hook return value destructuring
+              if (!elements.hookReturnValueRelationships.has(componentName)) {
+                elements.hookReturnValueRelationships.set(componentName, []);
+              }
+              elements.hookReturnValueRelationships.get(componentName)!.push({
+                hook: calleeName,
+                returnValues: destructured,
+              });
+            }
+
+            const label = isStoreHook
+              ? 'uses store'
+              : destructured.length > 0
+                ? `{${destructured.join(', ')}}`
+                : 'uses hook';
             elements.componentDependencies.push({
               component: componentName,
               target: calleeName,
@@ -449,6 +517,33 @@ function analyzeComponentBody(
               destructured,
               label,
             });
+          } else if (
+            (callee?.type as string) === 'MemberExpression' &&
+            (callee!.property as ASTNode)?.name === 'getState' &&
+            idType === 'ObjectPattern'
+          ) {
+            // Detect: const { x, y } = useXxxStore.getState()
+            const storeObj = (callee!.object as ASTNode | undefined);
+            const storeName = storeObj?.name as string | undefined;
+            if (storeName) {
+              const props = id.properties as ASTNode[] | undefined;
+              if (props) {
+                const propsArr = props
+                  .map(p => (p.key as ASTNode)?.name as string | undefined)
+                  .filter((s): s is string => typeof s === 'string');
+                if (propsArr.length > 0) {
+                  if (!elements.storeUsageRelationships.has(componentName)) {
+                    elements.storeUsageRelationships.set(componentName, new Map());
+                  }
+                  const storeMap = elements.storeUsageRelationships.get(componentName)!;
+                  if (!storeMap.has(storeName)) {
+                    storeMap.set(storeName, { properties: new Set(), actions: new Set() });
+                  }
+                  const storeInfo = storeMap.get(storeName)!;
+                  for (const prop of propsArr) storeInfo.properties.add(prop);
+                }
+              }
+            }
           }
         } else if (
           (initType === 'ArrowFunctionExpression' || initType === 'FunctionExpression') &&

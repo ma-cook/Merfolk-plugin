@@ -44,6 +44,9 @@ export function activate(context: ExtensionContext): void {
           fileContainers: new Map(),
           internalHelperComponents: [],
           rawCallSites: [],
+          storeUsageRelationships: new Map(),
+          hookReturnValueRelationships: new Map(),
+          moduleImportRelationships: new Map(),
         };
 
         const foundItems: FoundItems = {
