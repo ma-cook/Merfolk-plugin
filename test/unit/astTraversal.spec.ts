@@ -21,6 +21,7 @@ function makeElements(): Elements {
     componentDependencies: [],
     fileContainers: new Map(),
     internalHelperComponents: [],
+    rawCallSites: [],
   };
 }
 
@@ -1017,5 +1018,239 @@ describe('traverseReactAST', () => {
     expect(() =>
       traverseReactAST(ast, 'src/components/Complex.jsx', makeFileContext({ isComponent: true }), elements, foundItems)
     ).not.toThrow();
+  });
+});
+
+describe('deep call-site traversal (rawCallSites)', () => {
+  /**
+   * Build a minimal AST for a component that calls a utility function inside
+   * its body (e.g. inside a useCallback callback).
+   */
+  function makeComponentASTWithCall(componentName: string, calleeName: string) {
+    return {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: componentName },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    // const cb = useCallback(() => { callee() }, [])
+                    type: 'VariableDeclaration',
+                    declarations: [
+                      {
+                        type: 'VariableDeclarator',
+                        id: { name: 'cb' },
+                        init: {
+                          type: 'CallExpression',
+                          callee: { type: 'Identifier', name: 'useCallback' },
+                          arguments: [
+                            {
+                              type: 'ArrowFunctionExpression',
+                              body: {
+                                type: 'BlockStatement',
+                                body: [
+                                  {
+                                    type: 'ExpressionStatement',
+                                    expression: {
+                                      type: 'CallExpression',
+                                      callee: { type: 'Identifier', name: calleeName },
+                                      arguments: [],
+                                    },
+                                  },
+                                ],
+                              },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                  {
+                    type: 'ReturnStatement',
+                    argument: { type: 'JSXElement' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  it('finds call expressions inside useCallback callback bodies', () => {
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    const ast = makeComponentASTWithCall('MyComponent', 'fetchData');
+    traverseReactAST(ast, 'src/components/MyComponent.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const site = elements.rawCallSites.find(s => s.calleeName === 'fetchData');
+    expect(site).toBeDefined();
+    expect(site?.caller).toBe('MyComponent');
+  });
+
+  it('does NOT record React built-in hook calls in rawCallSites', () => {
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    const ast = makeComponentASTWithCall('MyComp', 'useState');
+    traverseReactAST(ast, 'src/components/MyComp.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const site = elements.rawCallSites.find(s => s.calleeName === 'useState');
+    expect(site).toBeUndefined();
+  });
+
+  it('does NOT record custom hook calls (use-prefixed) in rawCallSites', () => {
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    const ast = makeComponentASTWithCall('MyComp', 'useCustomThing');
+    traverseReactAST(ast, 'src/components/MyComp.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const site = elements.rawCallSites.find(s => s.calleeName === 'useCustomThing');
+    expect(site).toBeUndefined();
+  });
+
+  it('records per-call-site (not deduplicated) when the same function is called multiple times', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'Scene' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'CallExpression',
+                      callee: { type: 'Identifier', name: 'loadCell' },
+                      arguments: [],
+                    },
+                  },
+                  {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'CallExpression',
+                      callee: { type: 'Identifier', name: 'loadCell' },
+                      arguments: [],
+                    },
+                  },
+                  {
+                    type: 'ReturnStatement',
+                    argument: { type: 'JSXElement' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/Scene.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const sites = elements.rawCallSites.filter(s => s.calleeName === 'loadCell');
+    // Two separate call sites — NOT deduplicated
+    expect(sites.length).toBe(2);
+  });
+
+  it('records store .getState() calls with method property', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'PlaneMesh' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'CallExpression',
+                      callee: {
+                        type: 'MemberExpression',
+                        object: { type: 'Identifier', name: 'useStore' },
+                        property: { type: 'Identifier', name: 'getState' },
+                      },
+                      arguments: [],
+                    },
+                  },
+                  {
+                    type: 'ReturnStatement',
+                    argument: { type: 'JSXElement' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/PlaneMesh.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const site = elements.rawCallSites.find(s => s.method === '.getState()');
+    expect(site).toBeDefined();
+    expect(site?.caller).toBe('PlaneMesh');
+    expect(site?.calleeName).toBe('useStore');
+  });
+
+  it('records store .setState() calls with method property', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'SphereRenderer' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'CallExpression',
+                      callee: {
+                        type: 'MemberExpression',
+                        object: { type: 'Identifier', name: 'useStore' },
+                        property: { type: 'Identifier', name: 'setState' },
+                      },
+                      arguments: [],
+                    },
+                  },
+                  {
+                    type: 'ReturnStatement',
+                    argument: { type: 'JSXElement' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/SphereRenderer.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const site = elements.rawCallSites.find(s => s.method === '.setState()');
+    expect(site).toBeDefined();
+    expect(site?.caller).toBe('SphereRenderer');
+    expect(site?.calleeName).toBe('useStore');
   });
 });

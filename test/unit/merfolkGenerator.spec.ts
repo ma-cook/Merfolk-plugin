@@ -16,6 +16,7 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     componentDependencies: [],
     fileContainers: new Map(),
     internalHelperComponents: [],
+    rawCallSites: [],
     ...overrides,
   };
 }
@@ -262,5 +263,158 @@ describe('generateMerfolkMarkdown', () => {
       'react'
     );
     expect(typeof result).toBe('string');
+  });
+
+  it('emits %% Function Call Relationships section for rawCallSites resolved to a container', () => {
+    const containers = new Map();
+    containers.set('/src/utils/cache.ts', {
+      type: 'Function',
+      functions: new Set(['getCachedShader']),
+      nodeId: 'cache',
+      displayName: 'cache',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['SphereRenderer'],
+        rawCallSites: [
+          { caller: 'SphereRenderer', calleeName: 'getCachedShader' },
+        ],
+        fileContainers: containers,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Function Call Relationships');
+    expect(result).toContain('SphereRenderer --> cache : "calls getCachedShader"');
+    expect(result).toContain('cache --> getCachedShader : "receives"');
+  });
+
+  it('emits store .getState() as single-line in Function Call Relationships', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        stores: ['useStore'],
+        components: ['PlaneMesh'],
+        rawCallSites: [
+          { caller: 'PlaneMesh', calleeName: 'useStore', method: '.getState()' },
+        ],
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('PlaneMesh --> useStore : ".getState()"');
+    // Store method call is single-line — no "receives" second line
+    const lines = result.split('\n');
+    const getStateIdx = lines.findIndex(l => l.includes('.getState()'));
+    expect(lines[getStateIdx + 1]).not.toContain('receives');
+  });
+
+  it('does NOT deduplicate rawCallSites — each call site emits its own lines', () => {
+    const containers = new Map();
+    containers.set('/src/utils/cache.ts', {
+      type: 'Function',
+      functions: new Set(['getCachedShader']),
+      nodeId: 'resourceCache',
+      displayName: 'resourceCache',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['SphereRenderer'],
+        rawCallSites: [
+          { caller: 'SphereRenderer', calleeName: 'getCachedShader' },
+          { caller: 'SphereRenderer', calleeName: 'getCachedShader' },
+          { caller: 'SphereRenderer', calleeName: 'getCachedShader' },
+        ],
+        fileContainers: containers,
+      }),
+      'repo',
+      'react'
+    );
+    const matches = result.match(/SphereRenderer --> resourceCache : "calls getCachedShader"/g) ?? [];
+    expect(matches.length).toBe(3);
+  });
+
+  it('emits two-line chain for component dependencies (non-store)', () => {
+    const containers = new Map();
+    containers.set('/src/hooks/useAuth.ts', {
+      type: 'Hook',
+      functions: new Set(['useAuth']),
+      nodeId: 'useAuth_file',
+      displayName: 'useAuth',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['Scene'],
+        hooks: ['useAuth'],
+        componentDependencies: [
+          { component: 'Scene', target: 'useAuth', targetNodeId: 'useAuth', destructured: ['user'], label: '{user}' },
+        ],
+        fileContainers: containers,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('Scene --> useAuth_file : "{user}"');
+    expect(result).toContain('useAuth_file --> useAuth : "receives"');
+  });
+
+  it('does NOT emit second line for store component dependencies', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['CustomCamera'],
+        stores: ['useStore'],
+        componentDependencies: [
+          { component: 'CustomCamera', target: 'useStore', targetNodeId: 'useStore', destructured: [], label: 'uses store' },
+        ],
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('CustomCamera --> useStore : "uses store"');
+    // No second "receives" line for stores
+    expect(result).not.toContain('useStore --> useStore : "receives"');
+  });
+
+  it('does NOT deduplicate component dependencies', () => {
+    const containers = new Map();
+    containers.set('/src/hooks/useAuth.ts', {
+      type: 'Hook',
+      functions: new Set(['useAuth']),
+      nodeId: 'useAuth_file',
+      displayName: 'useAuth',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['Scene'],
+        hooks: ['useAuth'],
+        componentDependencies: [
+          { component: 'Scene', target: 'useAuth', targetNodeId: 'useAuth', destructured: ['user'], label: '{user}' },
+          { component: 'Scene', target: 'useAuth', targetNodeId: 'useAuth', destructured: ['user'], label: '{user}' },
+          { component: 'Scene', target: 'useAuth', targetNodeId: 'useAuth', destructured: ['user'], label: '{user}' },
+        ],
+        fileContainers: containers,
+      }),
+      'repo',
+      'react'
+    );
+    const matches = result.match(/Scene --> useAuth_file : "\{user\}"/g) ?? [];
+    expect(matches.length).toBe(3);
+  });
+
+  it('skips rawCallSites that do not resolve to a known file container', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['App'],
+        rawCallSites: [
+          { caller: 'App', calleeName: 'unknownFunction' },
+        ],
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).not.toContain('unknownFunction');
   });
 });

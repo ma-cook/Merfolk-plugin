@@ -86,6 +86,7 @@ export interface Elements {
   componentDependencies: ComponentDependencyRelation[];
   fileContainers: Map<string, FileContainerInfo>; // key = filePath
   internalHelperComponents: InternalHelperComponent[];
+  rawCallSites: RawCallSite[];                     // per-call-site (NOT deduplicated)
 }
 
 // Track what's already found to avoid duplicates
@@ -118,6 +119,13 @@ export interface FunctionCallRelationship {
 export interface ComponentDependency {
   name: string;
   type: 'hook' | 'service' | 'store' | 'utility';
+}
+
+// Raw call site captured during deep body traversal (NOT deduplicated)
+export interface RawCallSite {
+  caller: string;          // component or function that contains the call
+  calleeName: string;      // name of the function/store being called
+  method?: string;         // ".getState()" | ".setState()" for store method calls
 }
 
 // Hook return value info

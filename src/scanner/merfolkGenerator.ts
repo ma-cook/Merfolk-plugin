@@ -243,24 +243,49 @@ export function generateMerfolkMarkdown(
   }
 
   // %% Component Dependencies
+  // Each call site is emitted as-is (no deduplication) with a two-line chain
+  // for non-store targets: Caller --> container : label + container --> target : "receives"
   const compDeps = elements.componentDependencies ?? [];
   const depLines: string[] = [];
-  {
-    const seenDeps = new Set<string>();
-    for (const dep of compDeps) {
-      if (!componentSet.has(dep.component)) continue;
-      // Resolve to file container if available
-      const resolvedTarget = funcToContainerNodeId.get(dep.target) ?? dep.target;
-      const key = `${dep.component}|${resolvedTarget}|${dep.label}`;
-      if (!seenDeps.has(key)) {
-        seenDeps.add(key);
-        depLines.push(`${dep.component} --> ${resolvedTarget} : "${dep.label}"`);
-      }
+  for (const dep of compDeps) {
+    if (!componentSet.has(dep.component)) continue;
+    // Resolve to file container if available
+    const resolvedTarget = funcToContainerNodeId.get(dep.target) ?? dep.target;
+    depLines.push(`${dep.component} --> ${resolvedTarget} : "${dep.label}"`);
+    // Add "receives" line for non-store targets (two-line chain pattern)
+    if (!storeSet.has(dep.target) && !storeSet.has(resolvedTarget)) {
+      depLines.push(`${resolvedTarget} --> ${dep.target} : "receives"`);
     }
   }
   if (depLines.length > 0) {
     lines.push('%% Component Dependencies');
     lines.push(...depLines);
+    lines.push('');
+  }
+
+  // %% Function Call Relationships
+  // Per-call-site (NOT deduplicated) two-line chains for function calls and
+  // single-line store method calls discovered via deep body traversal.
+  const rawCallSites = elements.rawCallSites ?? [];
+  const callRelLines: string[] = [];
+  for (const site of rawCallSites) {
+    if (site.method) {
+      // Store method call: single-line entry
+      if (storeSet.has(site.calleeName)) {
+        callRelLines.push(`${site.caller} --> ${site.calleeName} : "${site.method}"`);
+      }
+    } else {
+      // Regular function call: two-line chain
+      const container = funcToContainerNodeId.get(site.calleeName);
+      if (container) {
+        callRelLines.push(`${site.caller} --> ${container} : "calls ${site.calleeName}"`);
+        callRelLines.push(`${container} --> ${site.calleeName} : "receives"`);
+      }
+    }
+  }
+  if (callRelLines.length > 0) {
+    lines.push('%% Function Call Relationships');
+    lines.push(...callRelLines);
     lines.push('');
   }
 

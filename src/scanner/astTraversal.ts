@@ -266,6 +266,110 @@ function walkNodeForJSX(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Deep call-site traversal — finds ALL CallExpression nodes in a subtree
+// and records them as RawCallSite entries (NOT deduplicated).
+// ---------------------------------------------------------------------------
+
+const SKIP_CALL_NAMES = new Set([
+  // React built-ins
+  'useState', 'useEffect', 'useRef', 'useMemo', 'useCallback',
+  'useContext', 'useReducer', 'useLayoutEffect', 'useImperativeHandle',
+  'useDebugValue', 'useDeferredValue', 'useTransition', 'useId',
+  'useInsertionEffect', 'useSyncExternalStore',
+  // Common noise
+  'console', 'Object', 'Array', 'Math', 'JSON', 'Promise', 'Error',
+  'parseInt', 'parseFloat', 'String', 'Number', 'Boolean',
+  'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
+  'require', 'import',
+]);
+
+/**
+ * Recursively walk any AST node and record every CallExpression whose callee
+ * refers to a user-defined function or store method.
+ * Results are pushed onto elements.rawCallSites (no deduplication).
+ */
+function deepWalkForCallSites(
+  node: unknown,
+  callerName: string,
+  elements: Elements,
+  depth: number
+): void {
+  if (!node || typeof node !== 'object' || depth > 30) return;
+  const n = node as ASTNode;
+  const nodeType = n.type as string;
+
+  if (!nodeType) return;
+
+  if (nodeType === 'CallExpression') {
+    const callee = n.callee as ASTNode | undefined;
+    if (callee) {
+      const calleeType = callee.type as string;
+
+      if (calleeType === 'Identifier') {
+        const calleeName = callee.name as string | undefined;
+        if (
+          calleeName &&
+          !SKIP_CALL_NAMES.has(calleeName) &&
+          !calleeName.startsWith('use')  // custom hooks already tracked in componentDependencies
+        ) {
+          elements.rawCallSites.push({ caller: callerName, calleeName });
+        }
+      } else if (calleeType === 'MemberExpression') {
+        const obj = callee.object as ASTNode | undefined;
+        const prop = callee.property as ASTNode | undefined;
+        const objName = (obj?.type as string) === 'Identifier'
+          ? (obj?.name as string | undefined)
+          : undefined;
+        const propName = prop?.name as string | undefined;
+
+        if (objName && (propName === 'getState' || propName === 'setState')) {
+          elements.rawCallSites.push({
+            caller: callerName,
+            calleeName: objName,
+            method: `.${propName}()`,
+          });
+        }
+      }
+    }
+    // Recurse into arguments
+    const args = n.arguments as unknown[] | undefined;
+    if (args) {
+      for (const arg of args) deepWalkForCallSites(arg, callerName, elements, depth + 1);
+    }
+    // Recurse into callee (for chained calls)
+    deepWalkForCallSites(n.callee, callerName, elements, depth + 1);
+    return;
+  }
+
+  // For function expressions / arrow functions, recurse into their body
+  if (
+    nodeType === 'FunctionExpression' ||
+    nodeType === 'ArrowFunctionExpression' ||
+    nodeType === 'FunctionDeclaration'
+  ) {
+    deepWalkForCallSites(n.body, callerName, elements, depth + 1);
+    return;
+  }
+
+  // Recurse into child nodes
+  const childProps = [
+    'body', 'consequent', 'alternate', 'argument', 'expression',
+    'declarations', 'init', 'test', 'update', 'block', 'handler', 'finalizer',
+    'left', 'right', 'object', 'property', 'elements', 'properties',
+    'params', 'cases', 'discriminant', 'value',
+  ];
+  for (const prop of childProps) {
+    const val = (n as Record<string, unknown>)[prop];
+    if (!val) continue;
+    if (Array.isArray(val)) {
+      for (const item of val) deepWalkForCallSites(item, callerName, elements, depth + 1);
+    } else if (typeof val === 'object' && (val as Record<string, unknown>).type) {
+      deepWalkForCallSites(val, callerName, elements, depth + 1);
+    }
+  }
+}
+
 /**
  * Extract internal functions and hook dependencies from a component body,
  * and JSX child relationships from the return path.
@@ -382,6 +486,9 @@ function analyzeComponentBody(
   for (const stmt of blockBody) {
     walkNodeForJSX(stmt, componentName, elements, 0);
   }
+
+  // Deep walk for per-call-site function call tracking
+  deepWalkForCallSites(body, componentName, elements, 0);
 }
 
 // ---------------------------------------------------------------------------
