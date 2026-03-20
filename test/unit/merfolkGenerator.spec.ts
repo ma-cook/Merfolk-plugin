@@ -21,6 +21,9 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     fileContainers: new Map(),
     internalHelperComponents: [],
     rawCallSites: [],
+    storeUsageRelationships: new Map(),
+    hookReturnValueRelationships: new Map(),
+    moduleImportRelationships: new Map(),
     nextjsRouteMap: new Map(),
     apiEndpoints: new Map(),
     dbModels: new Map(),
@@ -76,13 +79,13 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('[[Store: userStore]]');
   });
 
-  it('creates Service nodes with [Function: name] syntax', () => {
+  it('creates Service nodes with ((Service: name)) syntax', () => {
     const result = generateMerfolkMarkdown(
       makeElements({ services: ['ApiService'] }),
       'repo',
       'react'
     );
-    expect(result).toContain('ApiService[Function: ApiService]');
+    expect(result).toContain('ApiService((Service: ApiService))');
   });
 
   it('creates Library nodes with <Library: name> syntax', () => {
@@ -94,13 +97,13 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('<Library: lodash>');
   });
 
-  it('creates Hook nodes with [Function: name] syntax', () => {
+  it('creates Hook nodes with [Hook: name] syntax', () => {
     const result = generateMerfolkMarkdown(
       makeElements({ hooks: ['useAuth'] }),
       'repo',
       'react'
     );
-    expect(result).toContain('useAuth[Function: useAuth]');
+    expect(result).toContain('useAuth[Hook: useAuth]');
   });
 
   it('creates dashed arrows for component-function relationships (-.->) ', () => {
@@ -165,8 +168,8 @@ describe('generateMerfolkMarkdown', () => {
       'repo',
       'react'
     );
-    expect(result).toContain('apiUtil[Function: apiUtil]');
-    const matches = result.match(/apiUtil\[Function: apiUtil\]/g) ?? [];
+    expect(result).toContain('apiUtil((Service: apiUtil))');
+    const matches = result.match(/apiUtil\(\(Service: apiUtil\)\)/g) ?? [];
     expect(matches.length).toBe(1);
   });
 
@@ -622,5 +625,124 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).not.toContain('%% Error Boundaries');
     expect(result).not.toContain('%% Suspense Boundaries');
     expect(result).not.toContain('%% Worker Modules');
+  });
+
+  // --- Store Usage Relationships ---
+
+  it('emits %% Store Usage Details section for components with store property access', () => {
+    const storeUsage = new Map<string, Map<string, { properties: Set<string>; actions: Set<string> }>>();
+    const innerMap = new Map<string, { properties: Set<string>; actions: Set<string> }>();
+    innerMap.set('useObjectsStore', { properties: new Set(['objects']), actions: new Set(['addObject']) });
+    storeUsage.set('App', innerMap);
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['App'],
+        stores: ['useObjectsStore'],
+        storeUsageRelationships: storeUsage,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Store Usage Details');
+    expect(result).toContain('App --> useObjectsStore : "{objects, addObject}"');
+  });
+
+  it('skips store usage entries for unknown components', () => {
+    const storeUsage = new Map<string, Map<string, { properties: Set<string>; actions: Set<string> }>>();
+    const innerMap = new Map<string, { properties: Set<string>; actions: Set<string> }>();
+    innerMap.set('useObjectsStore', { properties: new Set(['objects']), actions: new Set() });
+    storeUsage.set('UnknownComp', innerMap);
+    const result = generateMerfolkMarkdown(
+      makeElements({ storeUsageRelationships: storeUsage }),
+      'repo',
+      'react'
+    );
+    expect(result).not.toContain('%% Store Usage Details');
+  });
+
+  it('omits store usage entry when properties and actions are both empty', () => {
+    const storeUsage = new Map<string, Map<string, { properties: Set<string>; actions: Set<string> }>>();
+    const innerMap = new Map<string, { properties: Set<string>; actions: Set<string> }>();
+    innerMap.set('useObjectsStore', { properties: new Set(), actions: new Set() });
+    storeUsage.set('App', innerMap);
+    const result = generateMerfolkMarkdown(
+      makeElements({ components: ['App'], storeUsageRelationships: storeUsage }),
+      'repo',
+      'react'
+    );
+    expect(result).not.toContain('%% Store Usage Details');
+  });
+
+  // --- Hook Return Value Relationships ---
+
+  it('enhances component dependency label via hookReturnValueRelationships when dep label is "uses hook"', () => {
+    const hookReturnValueRels = new Map<string, { hook: string; returnValues: string[] }[]>();
+    hookReturnValueRels.set('App', [{ hook: 'useFetchData', returnValues: ['data', 'loading', 'error'] }]);
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['App'],
+        hooks: ['useFetchData'],
+        componentDependencies: [
+          { component: 'App', target: 'useFetchData', targetNodeId: 'useFetchData', destructured: [], label: 'uses hook' },
+        ],
+        hookReturnValueRelationships: hookReturnValueRels,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('App --> useFetchData : "{data, loading, error}"');
+  });
+
+  it('does not override component dependency label when hookReturnValueRelationships has no match', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['App'],
+        hooks: ['useFetchData'],
+        componentDependencies: [
+          { component: 'App', target: 'useFetchData', targetNodeId: 'useFetchData', destructured: [], label: 'uses hook' },
+        ],
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('App --> useFetchData : "uses hook"');
+  });
+
+  // --- Module Import Relationships ---
+
+  it('emits %% Module Import Relationships for vanilla repos with relative imports', () => {
+    const moduleImports = new Map<string, Set<string>>();
+    moduleImports.set('/src/utils.ts', new Set(['helpers']));
+    moduleImports.set('/src/apiClient.ts', new Set(['config']));
+    const result = generateMerfolkMarkdown(
+      makeElements({ moduleImportRelationships: moduleImports }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Module Import Relationships');
+    expect(result).toContain('utils --> helpers : "imports"');
+    expect(result).toContain('apiClient --> config : "imports"');
+  });
+
+  it('does not emit %% Module Import Relationships for react repos', () => {
+    const moduleImports = new Map<string, Set<string>>();
+    moduleImports.set('/src/utils.ts', new Set(['helpers']));
+    const result = generateMerfolkMarkdown(
+      makeElements({ moduleImportRelationships: moduleImports }),
+      'repo',
+      'react'
+    );
+    expect(result).not.toContain('%% Module Import Relationships');
+  });
+
+  it('skips module import entries with empty source stem', () => {
+    const moduleImports = new Map<string, Set<string>>();
+    moduleImports.set('', new Set(['helpers']));
+    const result = generateMerfolkMarkdown(
+      makeElements({ moduleImportRelationships: moduleImports }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).not.toContain('%% Module Import Relationships');
   });
 });

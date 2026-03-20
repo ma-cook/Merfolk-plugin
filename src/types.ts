@@ -91,6 +91,9 @@ export interface Elements {
   fileContainers: Map<string, FileContainerInfo>; // key = filePath
   internalHelperComponents: InternalHelperComponent[];
   rawCallSites: RawCallSite[];                     // per-call-site (NOT deduplicated)
+  storeUsageRelationships: Map<string, Map<string, StoreUsageInfo>>; // component -> store -> {properties, actions}
+  hookReturnValueRelationships: Map<string, HookReturnValueInfo[]>;  // component -> hook return info
+  moduleImportRelationships: Map<string, Set<string>>;               // sourceFile -> Set<importedFileBasename>
   nextjsRouteMap: Map<string, NextjsRouteInfo>;
   apiEndpoints: Map<string, ApiEndpointInfo>;
   dbModels: Map<string, DbModelInfo>;
@@ -198,4 +201,74 @@ export interface SharedInterfaceInfo {
   name: string;
   filePath: string;
   kind: 'interface' | 'type';
+}
+
+/** Tracks store usage details: which state properties and actions a component uses */
+export interface StoreUsageDetail {
+  properties: Set<string>;
+  actions: Set<string>;
+}
+
+/** Tracks hook return value destructuring */
+export interface HookReturnValue {
+  hook: string;
+  returnValues: string[];
+}
+
+/** Tracks file container info for grouping functions inside file nodes */
+export interface FileFunctionInfo {
+  type: 'hook' | 'service' | 'utility' | 'store' | 'component';
+  functions: Set<string>;
+}
+
+/** Container for all relationship maps — mirrors hoverchart's githubRepoService tracking */
+export interface RelationshipMaps {
+  /** componentName -> Set of child component names used in JSX */
+  componentRelationships: Map<string, Set<string>>;
+  /** componentName -> Set of ComponentDependency (hooks/services/stores used) */
+  componentDependencies: Map<string, Set<ComponentDependency>>;
+  /** componentName -> Map of functions defined within the component */
+  componentFunctions: Map<string, Set<string>>;
+  /** parentFileName -> { parent: mainComponentName, helpers: Set of internal component names } */
+  internalComponents: Map<string, { parent: string; helpers: Set<string> }>;
+  /** fileName -> exported component name */
+  exportedComponents: Map<string, string>;
+  /** fileName -> FileFunctionInfo (functions grouped by file for container nodes) */
+  fileFunctions: Map<string, FileFunctionInfo>;
+  /** hookFileName -> Set of internal hook names that share names with parent */
+  internalHooks: Map<string, Set<string>>;
+  /** Set of file names that need _file suffix to avoid name collisions */
+  filesNeedingSuffix: Set<string>;
+  /** componentName -> Set of FunctionCallRelationship */
+  functionCallRelationships: Map<string, Set<FunctionCallRelationship>>;
+  /** componentName -> Map of child component name -> Set of prop names */
+  componentPropsRelationships: Map<string, Map<string, Set<string>>>;
+  /** componentName -> Map of storeName -> StoreUsageDetail */
+  storeUsageRelationships: Map<string, Map<string, StoreUsageDetail>>;
+  /** componentName -> HookReturnValue[] */
+  hookReturnValueRelationships: Map<string, HookReturnValue[]>;
+  /** sourceFileName -> Set of imported file base names */
+  moduleImportRelationships: Map<string, Set<string>>;
+  /** sanitizedFileName -> NextjsRouteInfo */
+  nextjsRouteMap: Map<string, NextjsRouteInfo>;
+}
+
+/** Creates an empty RelationshipMaps with all Maps/Sets initialized */
+export function createEmptyRelationshipMaps(): RelationshipMaps {
+  return {
+    componentRelationships: new Map(),
+    componentDependencies: new Map(),
+    componentFunctions: new Map(),
+    internalComponents: new Map(),
+    exportedComponents: new Map(),
+    fileFunctions: new Map(),
+    internalHooks: new Map(),
+    filesNeedingSuffix: new Set(),
+    functionCallRelationships: new Map(),
+    componentPropsRelationships: new Map(),
+    storeUsageRelationships: new Map(),
+    hookReturnValueRelationships: new Map(),
+    moduleImportRelationships: new Map(),
+    nextjsRouteMap: new Map(),
+  };
 }

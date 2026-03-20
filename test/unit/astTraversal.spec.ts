@@ -27,6 +27,9 @@ function makeElements(): Elements {
     fileContainers: new Map(),
     internalHelperComponents: [],
     rawCallSites: [],
+    storeUsageRelationships: new Map(),
+    hookReturnValueRelationships: new Map(),
+    moduleImportRelationships: new Map(),
     nextjsRouteMap: new Map(),
     apiEndpoints: new Map(),
     dbModels: new Map(),
@@ -384,6 +387,161 @@ describe('traverseVanillaAST', () => {
     expect(elements.services).toContain('fetchData');
   });
 
+  it('populates fileContainers with function name and container type', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'fetchData' },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/services/api.js', makeFileContext({ isService: true }), elements, foundItems);
+    const container = elements.fileContainers.get('src/services/api.js');
+    expect(container).toBeDefined();
+    expect(container!.type).toBe('Service');
+    expect(container!.functions.has('fetchData')).toBe(true);
+    expect(container!.nodeId).toBe('api');
+    expect(container!.displayName).toBe('api');
+  });
+
+  it('populates fileContainers with Hook type for hook files', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'FunctionDeclaration',
+            id: { name: 'useAuth' },
+            body: { type: 'BlockStatement', body: [] },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/hooks/useAuth.js', makeFileContext({ isHook: true }), elements, foundItems);
+    const container = elements.fileContainers.get('src/hooks/useAuth.js');
+    expect(container).toBeDefined();
+    expect(container!.type).toBe('Hook');
+    expect(container!.functions.has('useAuth')).toBe(true);
+  });
+
+  it('tracks function call sites in non-component function bodies', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'FunctionDeclaration',
+            id: { name: 'fetchData' },
+            body: {
+              type: 'BlockStatement',
+              body: [
+                {
+                  type: 'ExpressionStatement',
+                  expression: {
+                    type: 'CallExpression',
+                    callee: { type: 'Identifier', name: 'parseResponse' },
+                    arguments: [],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/services/api.js', makeFileContext({ isService: true }), elements, foundItems);
+    const site = elements.rawCallSites.find(s => s.calleeName === 'parseResponse');
+    expect(site).toBeDefined();
+    expect(site?.caller).toBe('fetchData');
+  });
+
+  it('tracks call sites in exported function declaration bodies', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'processItems' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'CallExpression',
+                      callee: { type: 'Identifier', name: 'validateItem' },
+                      arguments: [],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/utils/processor.js', makeFileContext({ isUtil: true }), elements, foundItems);
+    const site = elements.rawCallSites.find(s => s.calleeName === 'validateItem');
+    expect(site).toBeDefined();
+    expect(site?.caller).toBe('processItems');
+  });
+
+  it('does NOT track call sites for component files in vanilla traversal', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'FunctionDeclaration',
+            id: { name: 'MyComponent' },
+            body: {
+              type: 'BlockStatement',
+              body: [
+                {
+                  type: 'ExpressionStatement',
+                  expression: {
+                    type: 'CallExpression',
+                    callee: { type: 'Identifier', name: 'helperFn' },
+                    arguments: [],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/components/MyComponent.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    // Component files are handled by traverseReactAST; vanilla should not duplicate
+    const site = elements.rawCallSites.find(s => s.calleeName === 'helperFn');
+    expect(site).toBeUndefined();
+  });
+
   it('upgrades utility to service when class found', () => {
     const ast = {
       type: 'File',
@@ -454,6 +612,25 @@ describe('traversePythonSource', () => {
     expect(elements.imports.libraries).not.toContain('helpers');
   });
 
+  it('tracks relative imports in moduleImportRelationships', () => {
+    const source = 'from .helpers import format_date\nfrom ..models.user import User\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'services/api.py', makeFileContext({ isService: true }), elements, foundItems);
+    const imports = elements.moduleImportRelationships.get('services/api.py');
+    expect(imports).toBeDefined();
+    expect(imports!.has('helpers')).toBe(true);
+    expect(imports!.has('user')).toBe(true);
+  });
+
+  it('does NOT add relative imports to moduleImportRelationships when no relative imports', () => {
+    const source = 'import os\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'main.py', makeFileContext(), elements, foundItems);
+    expect(elements.moduleImportRelationships.has('main.py')).toBe(false);
+  });
+
   it('tracks absolute imports as libraries', () => {
     const source = 'import os\nimport sys\n';
     const elements = makeElements();
@@ -503,6 +680,40 @@ describe('traversePythonSource', () => {
     traversePythonSource(source, 'views/home.py', makeFileContext({ isView: true }), elements, foundItems);
     expect(elements.functions).toContain('home_view');
   });
+
+  it('creates fileContainers entry for Python service files', () => {
+    const source = 'def fetch_users():\n    pass\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'services/api.py', makeFileContext({ isService: true }), elements, foundItems);
+    const container = elements.fileContainers.get('services/api.py');
+    expect(container).toBeDefined();
+    expect(container!.type).toBe('Service');
+    expect(container!.functions.has('fetch_users')).toBe(true);
+    expect(container!.nodeId).toBe('api');
+  });
+
+  it('creates fileContainers entry for Python model files with classes', () => {
+    const source = 'class UserModel:\n    pass\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'models/user.py', makeFileContext({ isModel: true }), elements, foundItems);
+    const container = elements.fileContainers.get('models/user.py');
+    expect(container).toBeDefined();
+    expect(container!.type).toBe('Service');
+    expect(container!.functions.has('UserModel')).toBe(true);
+  });
+
+  it('creates fileContainers entry for Python utility files', () => {
+    const source = 'def format_date(date):\n    pass\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'utils/helpers.py', makeFileContext({ isUtil: true }), elements, foundItems);
+    const container = elements.fileContainers.get('utils/helpers.py');
+    expect(container).toBeDefined();
+    expect(container!.type).toBe('Function');
+    expect(container!.functions.has('format_date')).toBe(true);
+  });
 });
 
 describe('traverseVueSource', () => {
@@ -548,6 +759,29 @@ const count = ref(0)
     expect(elements.components).toContain('Parent');
   });
 
+  it('adds componentRelationships for PascalCase child components in template', () => {
+    const source = `<template><MyButton /><DataTable /></template>
+<script setup></script>`;
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVueSource(source, 'src/components/Parent.vue', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rel = elements.componentRelationships.find(r => r.parent === 'Parent' && r.child === 'MyButton');
+    expect(rel).toBeDefined();
+    expect(rel!.props).toEqual(['uses']);
+    const rel2 = elements.componentRelationships.find(r => r.parent === 'Parent' && r.child === 'DataTable');
+    expect(rel2).toBeDefined();
+  });
+
+  it('deduplicates repeated child component tags in template', () => {
+    const source = `<template><MyButton /><MyButton /></template>
+<script setup></script>`;
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVueSource(source, 'src/components/Parent.vue', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rels = elements.componentRelationships.filter(r => r.parent === 'Parent' && r.child === 'MyButton');
+    expect(rels.length).toBe(1);
+  });
+
   it('scans template for kebab-case child component usage', () => {
     const source = `<template><my-button /></template>
 <script setup></script>`;
@@ -586,6 +820,47 @@ const store = useMainStore()
     const foundItems = makeFoundItems();
     traverseVueSource(source, 'src/components/App.vue', makeFileContext({ isComponent: true }), elements, foundItems);
     expect(elements.components).toContain('App');
+  });
+
+  it('tracks composable calls as componentDependencies in script setup', () => {
+    const source = `<template><div /></template>
+<script setup>
+import { useAuth } from '../composables/useAuth'
+const { user, isAuthenticated } = useAuth()
+</script>`;
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVueSource(source, 'src/components/Profile.vue', makeFileContext({ isComponent: true }), elements, foundItems);
+    const dep = elements.componentDependencies.find(d => d.component === 'Profile' && d.target === 'useAuth');
+    expect(dep).toBeDefined();
+    expect(dep!.targetNodeId).toBe('useAuth');
+  });
+
+  it('tracks multiple composable dependencies from script setup', () => {
+    const source = `<template><div /></template>
+<script setup>
+const store = useMainStore()
+const router = useRouter()
+</script>`;
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVueSource(source, 'src/components/App.vue', makeFileContext({ isComponent: true }), elements, foundItems);
+    const deps = elements.componentDependencies.filter(d => d.component === 'App');
+    expect(deps.some(d => d.target === 'useMainStore')).toBe(true);
+    expect(deps.some(d => d.target === 'useRouter')).toBe(true);
+  });
+
+  it('does not duplicate composable dependencies', () => {
+    const source = `<template><div /></template>
+<script setup>
+const a = useAuth()
+const b = useAuth()
+</script>`;
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVueSource(source, 'src/components/Double.vue', makeFileContext({ isComponent: true }), elements, foundItems);
+    const deps = elements.componentDependencies.filter(d => d.component === 'Double' && d.target === 'useAuth');
+    expect(deps.length).toBe(1);
   });
 
   it('handles files with no script block gracefully', () => {
@@ -1719,5 +1994,338 @@ describe('buildNextjsRouteMap', () => {
     const elements = makeElements();
     buildNextjsRouteMap(['/project/app/components/Button.tsx'], elements);
     expect(elements.nextjsRouteMap.size).toBe(0);
+  });
+});
+
+describe('storeUsageRelationships tracking', () => {
+  function makeComponentAST(componentName: string, body: unknown[]) {
+    return {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: componentName },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  ...body,
+                  { type: 'ReturnStatement', argument: { type: 'JSXElement' } },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  it('tracks destructured properties from store hook call', () => {
+    const ast = makeComponentAST('App', [
+      {
+        type: 'VariableDeclaration',
+        declarations: [
+          {
+            type: 'VariableDeclarator',
+            id: {
+              type: 'ObjectPattern',
+              properties: [
+                { key: { name: 'objects' } },
+                { key: { name: 'addObject' } },
+              ],
+            },
+            init: {
+              type: 'CallExpression',
+              callee: { type: 'Identifier', name: 'useObjectsStore' },
+              arguments: [],
+            },
+          },
+        ],
+      },
+    ]);
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const storeMap = elements.storeUsageRelationships.get('App');
+    expect(storeMap).toBeDefined();
+    const info = storeMap!.get('useObjectsStore');
+    expect(info).toBeDefined();
+    expect(info!.properties.has('objects')).toBe(true);
+    expect(info!.properties.has('addObject')).toBe(true);
+  });
+
+  it('tracks selector property from useStore(state => state.x)', () => {
+    const ast = makeComponentAST('App', [
+      {
+        type: 'VariableDeclaration',
+        declarations: [
+          {
+            type: 'VariableDeclarator',
+            id: { type: 'Identifier', name: 'selectedItem' },
+            init: {
+              type: 'CallExpression',
+              callee: { type: 'Identifier', name: 'useObjectsStore' },
+              arguments: [
+                {
+                  type: 'ArrowFunctionExpression',
+                  body: {
+                    type: 'MemberExpression',
+                    object: { type: 'Identifier', name: 'state' },
+                    property: { type: 'Identifier', name: 'selectedObject' },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const storeMap = elements.storeUsageRelationships.get('App');
+    expect(storeMap).toBeDefined();
+    const info = storeMap!.get('useObjectsStore');
+    expect(info).toBeDefined();
+    expect(info!.properties.has('selectedObject')).toBe(true);
+  });
+
+  it('tracks getState() destructuring as store properties', () => {
+    const ast = makeComponentAST('App', [
+      {
+        type: 'VariableDeclaration',
+        declarations: [
+          {
+            type: 'VariableDeclarator',
+            id: {
+              type: 'ObjectPattern',
+              properties: [{ key: { name: 'items' } }, { key: { name: 'count' } }],
+            },
+            init: {
+              type: 'CallExpression',
+              callee: {
+                type: 'MemberExpression',
+                object: { type: 'Identifier', name: 'useDataStore' },
+                property: { type: 'Identifier', name: 'getState' },
+              },
+              arguments: [],
+            },
+          },
+        ],
+      },
+    ]);
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const storeMap = elements.storeUsageRelationships.get('App');
+    expect(storeMap).toBeDefined();
+    const info = storeMap!.get('useDataStore');
+    expect(info).toBeDefined();
+    expect(info!.properties.has('items')).toBe(true);
+    expect(info!.properties.has('count')).toBe(true);
+  });
+
+  it('tracks setState() calls as actions in storeUsageRelationships', () => {
+    const ast = makeComponentAST('App', [
+      {
+        type: 'ExpressionStatement',
+        expression: {
+          type: 'CallExpression',
+          callee: {
+            type: 'MemberExpression',
+            object: { type: 'Identifier', name: 'useDataStore' },
+            property: { type: 'Identifier', name: 'setState' },
+          },
+          arguments: [],
+        },
+      },
+    ]);
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const storeMap = elements.storeUsageRelationships.get('App');
+    expect(storeMap).toBeDefined();
+    const info = storeMap!.get('useDataStore');
+    expect(info).toBeDefined();
+    expect(info!.actions.has('setState')).toBe(true);
+  });
+});
+
+describe('hookReturnValueRelationships tracking', () => {
+  it('tracks destructured values from non-store custom hooks', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'UserProfile' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'VariableDeclaration',
+                    declarations: [
+                      {
+                        type: 'VariableDeclarator',
+                        id: {
+                          type: 'ObjectPattern',
+                          properties: [
+                            { key: { name: 'user' } },
+                            { key: { name: 'isAuthenticated' } },
+                          ],
+                        },
+                        init: {
+                          type: 'CallExpression',
+                          callee: { type: 'Identifier', name: 'useAuth' },
+                          arguments: [],
+                        },
+                      },
+                    ],
+                  },
+                  { type: 'ReturnStatement', argument: { type: 'JSXElement' } },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/UserProfile.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rvList = elements.hookReturnValueRelationships.get('UserProfile');
+    expect(rvList).toBeDefined();
+    const entry = rvList!.find(e => e.hook === 'useAuth');
+    expect(entry).toBeDefined();
+    expect(entry!.returnValues).toContain('user');
+    expect(entry!.returnValues).toContain('isAuthenticated');
+  });
+
+  it('does NOT track store hooks in hookReturnValueRelationships', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'App' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'VariableDeclaration',
+                    declarations: [
+                      {
+                        type: 'VariableDeclarator',
+                        id: {
+                          type: 'ObjectPattern',
+                          properties: [{ key: { name: 'items' } }],
+                        },
+                        init: {
+                          type: 'CallExpression',
+                          callee: { type: 'Identifier', name: 'useItemsStore' },
+                          arguments: [],
+                        },
+                      },
+                    ],
+                  },
+                  { type: 'ReturnStatement', argument: { type: 'JSXElement' } },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const rvList = elements.hookReturnValueRelationships.get('App');
+    // Store hooks should NOT appear in hookReturnValueRelationships
+    expect(rvList).toBeUndefined();
+  });
+});
+
+describe('moduleImportRelationships tracking', () => {
+  it('tracks relative imports as moduleImportRelationships in vanilla traversal', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ImportDeclaration',
+            source: { value: './helpers' },
+            specifiers: [],
+          },
+          {
+            type: 'ImportDeclaration',
+            source: { value: '../config' },
+            specifiers: [],
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, '/src/utils/utils.ts', makeFileContext({ isUtil: true }), elements, foundItems);
+    const imports = elements.moduleImportRelationships.get('/src/utils/utils.ts');
+    expect(imports).toBeDefined();
+    expect(imports!.has('helpers')).toBe(true);
+    expect(imports!.has('config')).toBe(true);
+  });
+
+  it('does NOT track non-relative imports in moduleImportRelationships', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ImportDeclaration',
+            source: { value: 'react' },
+            specifiers: [],
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, '/src/utils/utils.ts', makeFileContext({ isUtil: true }), elements, foundItems);
+    const imports = elements.moduleImportRelationships.get('/src/utils/utils.ts');
+    expect(imports).toBeUndefined();
+  });
+
+  it('strips file extensions from imported basenames', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ImportDeclaration',
+            source: { value: './helpers.ts' },
+            specifiers: [],
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, '/src/utils/utils.ts', makeFileContext({ isUtil: true }), elements, foundItems);
+    const imports = elements.moduleImportRelationships.get('/src/utils/utils.ts');
+    expect(imports).toBeDefined();
+    expect(imports!.has('helpers')).toBe(true);
+    expect(imports!.has('helpers.ts')).toBe(false);
   });
 });
