@@ -1,4 +1,4 @@
-import type { Elements, FoundItems, FileContext, ComponentInternalFunction } from '../types';
+import type { Elements, FoundItems, FileContext, ComponentInternalFunction, ApiEndpointInfo, DbModelInfo } from '../types';
 import { containsJSX } from './fileAnalyzer';
 import { parse } from '@babel/parser';
 
@@ -68,9 +68,10 @@ function classifyName(
   foundItems: FoundItems,
   filePath?: string
 ): void {
-  // Class declarations always go to services (even in util context)
+  // Class declarations always go to services (even in util context) AND tracked as classes
   if (declarationType === 'ClassDeclaration') {
     addToSet(name, foundItems.services, elements.services);
+    if (!elements.classes.includes(name)) elements.classes.push(name);
     if (filePath) addToFileContainer(filePath, name, fileContext, elements);
     return;
   }
@@ -86,6 +87,171 @@ function classifyName(
     addToSet(name, foundItems.functions, elements.functions);
   }
   if (filePath) addToFileContainer(filePath, name, fileContext, elements);
+}
+
+// ---------------------------------------------------------------------------
+// Pattern detection helpers
+// ---------------------------------------------------------------------------
+
+/** Detect `new EventEmitter()` or similar event emitter creation patterns. */
+function detectEventEmitterCreation(
+  name: string,
+  init: ASTNode,
+  elements: Elements
+): void {
+  if (init.type === 'NewExpression') {
+    const callee = init.callee as ASTNode | undefined;
+    const calleeName = callee?.name as string | undefined;
+    if (calleeName === 'EventEmitter' || calleeName === 'EventTarget') {
+      if (!elements.eventEmitters.has(name)) {
+        elements.eventEmitters.set(name, new Set());
+      }
+    }
+  }
+}
+
+/** Detect `.emit('event')` and `.on('event')` / `.addEventListener('event')` patterns. */
+function detectEventListenerRegistration(
+  expr: ASTNode,
+  elements: Elements
+): void {
+  if (expr.type !== 'CallExpression') return;
+  const callee = expr.callee as ASTNode | undefined;
+  if (callee?.type !== 'MemberExpression') return;
+
+  const obj = callee.object as ASTNode | undefined;
+  const prop = callee.property as ASTNode | undefined;
+  const objName = obj?.name as string | undefined;
+  const method = prop?.name as string | undefined;
+  if (!objName || !method) return;
+
+  const args = expr.arguments as ASTNode[] | undefined;
+  const eventName = args?.[0]?.value as string | undefined;
+  if (!eventName) return;
+
+  if (method === 'emit') {
+    if (!elements.eventEmitters.has(objName)) {
+      elements.eventEmitters.set(objName, new Set());
+    }
+    elements.eventEmitters.get(objName)!.add(eventName);
+  } else if (method === 'on' || method === 'addEventListener' || method === 'addListener') {
+    if (!elements.eventListeners.has(objName)) {
+      elements.eventListeners.set(objName, new Set());
+    }
+    elements.eventListeners.get(objName)!.add(eventName);
+  }
+}
+
+/** Detect Mongoose Schema / Sequelize define / Prisma-like model creation. */
+function detectDbModelCreation(
+  name: string,
+  init: ASTNode,
+  elements: Elements
+): void {
+  // new Schema({...}) — Mongoose
+  if (init.type === 'NewExpression') {
+    const callee = init.callee as ASTNode | undefined;
+    const calleeName = callee?.name as string | undefined;
+    if (calleeName === 'Schema') {
+      const fields = extractObjectKeys(init.arguments as ASTNode[] | undefined);
+      elements.dbModels.set(name, { fields, type: 'mongoose' });
+      return;
+    }
+  }
+  // sequelize.define('Name', {...})
+  if (init.type === 'CallExpression') {
+    const callee = init.callee as ASTNode | undefined;
+    if (callee?.type === 'MemberExpression') {
+      const method = (callee.property as ASTNode | undefined)?.name as string | undefined;
+      if (method === 'define') {
+        const args = init.arguments as ASTNode[] | undefined;
+        const modelName = args?.[0]?.value as string | undefined;
+        const fields = args?.[1] ? extractObjectKeys([args[1]]) : [];
+        elements.dbModels.set(modelName ?? name, { fields, type: 'sequelize' });
+      }
+    }
+  }
+}
+
+/** Extract top-level keys from the first ObjectExpression argument. */
+function extractObjectKeys(args: ASTNode[] | undefined): string[] {
+  if (!args || args.length === 0) return [];
+  const first = args[0];
+  if (first.type !== 'ObjectExpression') return [];
+  const props = first.properties as ASTNode[] | undefined;
+  if (!props) return [];
+  return props
+    .map(p => (p.key as ASTNode | undefined)?.name as string | undefined ?? (p.key as ASTNode | undefined)?.value as string | undefined)
+    .filter((s): s is string => typeof s === 'string');
+}
+
+/** Detect auth guard patterns: passport.authenticate, jwt.verify, auth middleware HOCs. */
+function detectAuthGuardPattern(
+  name: string,
+  init: ASTNode,
+  elements: Elements
+): void {
+  if (init.type === 'CallExpression') {
+    const callee = init.callee as ASTNode | undefined;
+    if (callee?.type === 'MemberExpression') {
+      const obj = callee.object as ASTNode | undefined;
+      const prop = callee.property as ASTNode | undefined;
+      const objName = obj?.name as string | undefined;
+      const method = prop?.name as string | undefined;
+      if (
+        (objName === 'passport' && method === 'authenticate') ||
+        (objName === 'jwt' && method === 'verify')
+      ) {
+        elements.authGuards.add(name);
+      }
+    }
+    // Direct call: requireAuth(), withAuth(), etc.
+    const calleeName = (init.callee as ASTNode | undefined)?.name as string | undefined;
+    if (calleeName && /^(requireAuth|withAuth|ensureAuth|isAuthenticated|checkAuth|authGuard|protect)$/i.test(calleeName)) {
+      elements.authGuards.add(name);
+    }
+  }
+}
+
+/** Detect Express/Fastify-style route registrations: app.get('/path', handler) */
+function detectApiEndpointRegistration(
+  expr: ASTNode,
+  elements: Elements
+): void {
+  if (expr.type !== 'CallExpression') return;
+  const callee = expr.callee as ASTNode | undefined;
+  if (callee?.type !== 'MemberExpression') return;
+
+  const prop = callee.property as ASTNode | undefined;
+  const method = prop?.name as string | undefined;
+  const httpMethods = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options']);
+  if (!method || !httpMethods.has(method)) return;
+
+  const obj = callee.object as ASTNode | undefined;
+  const objName = obj?.name as string | undefined;
+  if (!objName || !(/^(app|router|server|api)$/i.test(objName))) return;
+
+  const args = expr.arguments as ASTNode[] | undefined;
+  if (!args || args.length < 2) return;
+
+  const pathArg = args[0];
+  const routePath = pathArg.value as string | undefined;
+  if (!routePath || typeof routePath !== 'string') return;
+
+  const handlers: string[] = [];
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.type === 'Identifier') {
+      handlers.push(arg.name as string);
+    }
+  }
+
+  const key = `${method.toUpperCase()} ${routePath}`;
+  elements.apiEndpoints.set(key, {
+    method: method.toUpperCase(),
+    path: routePath,
+    handlers,
+  });
 }
 
 function processVanillaNode(
@@ -111,8 +277,20 @@ function processVanillaNode(
     const decl = node.declaration as ASTNode | undefined;
     if (!decl) return;
     const dt = decl.type as string;
-    // Skip TypeScript-only declarations
-    if (dt === 'TSInterfaceDeclaration' || dt === 'TSTypeAliasDeclaration' || dt === 'TSEnumDeclaration') {
+    // Extract TypeScript interfaces and type aliases into sharedInterfaces
+    if (dt === 'TSInterfaceDeclaration' || dt === 'TSTypeAliasDeclaration') {
+      const name = (decl.id as ASTNode | undefined)?.name as string | undefined;
+      if (name && filePath) {
+        if (!elements.interfaces.includes(name)) elements.interfaces.push(name);
+        elements.sharedInterfaces.set(name, {
+          name,
+          filePath,
+          kind: dt === 'TSInterfaceDeclaration' ? 'interface' : 'type',
+        });
+      }
+      return;
+    }
+    if (dt === 'TSEnumDeclaration') {
       return;
     }
     if (dt === 'VariableDeclaration') {
@@ -120,7 +298,17 @@ function processVanillaNode(
       if (decls) {
         for (const d of decls) {
           const name = (d.id as ASTNode | undefined)?.name as string | undefined;
-          if (name) classifyName(name, 'variable', fileContext, elements, foundItems, filePath);
+          if (name) {
+            classifyName(name, 'variable', fileContext, elements, foundItems, filePath);
+            // Detect event emitter patterns: new EventEmitter()
+            const init = d.init as ASTNode | undefined;
+            if (init) {
+              detectEventEmitterCreation(name, init, elements);
+              detectDbModelCreation(name, init, elements);
+              detectAuthGuardPattern(name, init, elements);
+              detectApiEndpointRegistration(init, elements);
+            }
+          }
         }
       }
     } else {
@@ -152,7 +340,34 @@ function processVanillaNode(
     if (name) classifyName(name, 'ClassDeclaration', fileContext, elements, foundItems, filePath);
     return;
   }
-  // ExportAllDeclaration, VariableDeclaration (CommonJS require), etc. — no-op
+
+  // Top-level expression statements: detect app.get(), router.post(), emitter.on(), etc.
+  if (type === 'ExpressionStatement') {
+    const expr = node.expression as ASTNode | undefined;
+    if (expr) {
+      detectApiEndpointRegistration(expr, elements);
+      detectEventListenerRegistration(expr, elements);
+    }
+    return;
+  }
+
+  // Top-level VariableDeclaration (not exported) — detect patterns
+  if (type === 'VariableDeclaration') {
+    const decls = node.declarations as ASTNode[] | undefined;
+    if (decls) {
+      for (const d of decls) {
+        const name = (d.id as ASTNode | undefined)?.name as string | undefined;
+        const init = d.init as ASTNode | undefined;
+        if (name && init) {
+          detectEventEmitterCreation(name, init, elements);
+          detectDbModelCreation(name, init, elements);
+          detectAuthGuardPattern(name, init, elements);
+        }
+      }
+    }
+    return;
+  }
+  // ExportAllDeclaration, etc. — no-op
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +411,44 @@ function getInternalFunctionLabel(name: string, calleeName: string): string {
   return 'internal function';
 }
 
-/** Walk a JSX tree and collect child component relationships. */
+/** Collect component names contained inside a boundary (Suspense/Error) JSX subtree. */
+function collectContainedComponents(
+  node: unknown,
+  boundaryName: string,
+  containmentMap: Map<string, Set<string>>,
+  _type: string
+): void {
+  if (!node || typeof node !== 'object') return;
+  const n = node as ASTNode;
+  if (n.type === 'JSXElement') {
+    const opening = n.openingElement as ASTNode | undefined;
+    const nameNode = opening?.name as ASTNode | undefined;
+    if ((nameNode?.type as string) === 'JSXIdentifier') {
+      const childName = nameNode?.name as string | undefined;
+      if (childName && /^[A-Z]/.test(childName)) {
+        if (!containmentMap.has(boundaryName)) {
+          containmentMap.set(boundaryName, new Set());
+        }
+        containmentMap.get(boundaryName)!.add(childName);
+      }
+    }
+    const children = n.children as unknown[] | undefined;
+    if (children) {
+      for (const c of children) collectContainedComponents(c, boundaryName, containmentMap, _type);
+    }
+  }
+  if (n.type === 'JSXFragment') {
+    const children = n.children as unknown[] | undefined;
+    if (children) {
+      for (const c of children) collectContainedComponents(c, boundaryName, containmentMap, _type);
+    }
+  }
+  if (n.type === 'JSXExpressionContainer') {
+    collectContainedComponents(n.expression, boundaryName, containmentMap, _type);
+  }
+}
+
+/** Walk a JSX tree and collect child component relationships, Suspense and error boundaries. */
 function walkNodeForJSX(
   node: unknown,
   parentComponent: string,
@@ -215,6 +467,18 @@ function walkNodeForJSX(
       childName = nameNode?.name as string | undefined;
     }
     if (childName && /^[A-Z]/.test(childName)) {
+      // Detect Suspense boundaries
+      if (childName === 'Suspense') {
+        elements.suspenseBoundaries.add(parentComponent);
+        // Track containment: children inside Suspense belong to this component
+        const children = n.children as unknown[] | undefined;
+        if (children) {
+          for (const c of children) {
+            collectContainedComponents(c, parentComponent, elements.errorContainment, 'suspense');
+          }
+        }
+      }
+
       const attrs = opening?.attributes as ASTNode[] | undefined;
       const propNames: string[] = [];
       if (attrs) {
@@ -539,6 +803,19 @@ function processReactDecl(
       const superPropName = (superClass.property as ASTNode | undefined)?.name as string | undefined;
       if (superObjName === 'React' && (superPropName === 'Component' || superPropName === 'PureComponent')) {
         addToSet(name, foundItems.components, elements.components);
+        // Check for error boundary methods: componentDidCatch / getDerivedStateFromError
+        const classBody = decl.body as ASTNode | undefined;
+        const bodyItems = classBody?.body as ASTNode[] | undefined;
+        if (bodyItems) {
+          for (const member of bodyItems) {
+            const memberKey = member.key as ASTNode | undefined;
+            const memberName = memberKey?.name as string | undefined;
+            if (memberName === 'componentDidCatch' || memberName === 'getDerivedStateFromError') {
+              elements.errorBoundaries.add(name);
+              break;
+            }
+          }
+        }
       }
     }
     return;
@@ -653,6 +930,108 @@ export function traverseReactAST(
       }
     }
   }
+
+  // Detect Next.js API route handler exports (export function GET, POST, etc.)
+  if (body) {
+    const httpMethods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
+    for (const node of body) {
+      const nodeType = node.type as string;
+      if (nodeType === 'ExportNamedDeclaration') {
+        const decl = node.declaration as ASTNode | undefined;
+        if (!decl) continue;
+        const declType = decl.type as string;
+        let funcName: string | undefined;
+        if (declType === 'FunctionDeclaration') {
+          funcName = (decl.id as ASTNode | undefined)?.name as string | undefined;
+        } else if (declType === 'VariableDeclaration') {
+          const decls = decl.declarations as ASTNode[] | undefined;
+          if (decls?.[0]) {
+            funcName = (decls[0].id as ASTNode | undefined)?.name as string | undefined;
+          }
+        }
+        if (funcName && httpMethods.has(funcName)) {
+          // Derive route path from file path
+          const routePath = deriveNextjsRoutePath(filePath);
+          const key = `${funcName} ${routePath}`;
+          elements.apiEndpoints.set(key, {
+            method: funcName,
+            path: routePath,
+            handlers: [funcName],
+          });
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Next.js route helpers
+// ---------------------------------------------------------------------------
+
+/** Derive a Next.js route path from a file system path. */
+function deriveNextjsRoutePath(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/');
+  // Match from app/ or pages/ directory
+  const appMatch = /(?:^|\/)(app|pages)\/(.*)$/.exec(normalized);
+  if (!appMatch) return '/';
+  const segments = appMatch[2].split('/');
+  // Remove the filename (page.tsx, route.ts, layout.tsx, etc.)
+  segments.pop();
+  if (segments.length === 0) return '/';
+  return '/' + segments.join('/');
+}
+
+/**
+ * Build a Next.js route map by scanning file paths that match app/ routing conventions.
+ * Call this from extension.ts for Next.js projects.
+ */
+export function buildNextjsRouteMap(
+  filePaths: string[],
+  elements: Elements
+): void {
+  const routeFiles = new Set(['page.tsx', 'page.jsx', 'page.ts', 'page.js',
+    'layout.tsx', 'layout.jsx', 'layout.ts', 'layout.js',
+    'route.ts', 'route.js',
+    'loading.tsx', 'loading.jsx', 'loading.ts', 'loading.js',
+    'error.tsx', 'error.jsx', 'error.ts', 'error.js',
+    'not-found.tsx', 'not-found.jsx', 'not-found.ts', 'not-found.js']);
+
+  for (const fp of filePaths) {
+    const normalized = fp.replace(/\\/g, '/');
+    const appMatch = /(?:^|\/)app\/(.*)$/.exec(normalized);
+    if (!appMatch) continue;
+
+    const relativePath = appMatch[1];
+    const parts = relativePath.split('/');
+    const fileName = parts[parts.length - 1];
+    if (!routeFiles.has(fileName)) continue;
+
+    const routeSegments = parts.slice(0, -1);
+    const routePath = '/' + routeSegments.join('/');
+    const parentRoutePath = routeSegments.length > 0
+      ? '/' + routeSegments.slice(0, -1).join('/')
+      : '/';
+    const segment = routeSegments[routeSegments.length - 1] ?? '';
+    const baseName = fileName.replace(/\.[^.]+$/, '');
+
+    const info = {
+      segment,
+      routePath: routePath === '/' ? '/' : routePath.replace(/\/$/, ''),
+      parentRoutePath: parentRoutePath === '/' ? '/' : parentRoutePath.replace(/\/$/, ''),
+      isLayout: baseName === 'layout',
+      isPage: baseName === 'page',
+      isLoading: baseName === 'loading',
+      isError: baseName === 'error',
+      isNotFound: baseName === 'not-found',
+      isAppShell: routeSegments.length === 0 && baseName === 'layout',
+      isDocument: false,
+      isMiddleware: false,
+      isApi: relativePath.includes('api/'),
+      filePath: fp,
+    };
+
+    elements.nextjsRouteMap.set(fp, info);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -687,6 +1066,40 @@ export function traversePythonSource(
   while ((match = classRegex.exec(source)) !== null) {
     const name = match[1];
     addToSet(name, foundItems.services, elements.services);
+    if (!elements.classes.includes(name)) elements.classes.push(name);
+  }
+
+  // Detect Django/SQLAlchemy model classes
+  const modelClassRegex = /^class\s+(\w+)\s*\(\s*(models\.Model|db\.Model|Base)\s*\)/gm;
+  while ((match = modelClassRegex.exec(source)) !== null) {
+    const modelName = match[1];
+    const parentClass = match[2];
+    const modelType = parentClass === 'models.Model' ? 'django'
+      : parentClass === 'db.Model' ? 'sqlalchemy'
+        : 'sqlalchemy';
+    // Extract field names from class body (simplified)
+    const fields = extractPythonModelFields(source, modelName);
+    elements.dbModels.set(modelName, { fields, type: modelType });
+  }
+
+  // Detect Flask/FastAPI route decorators
+  const routeDecoratorRegex = /^@(?:app|router|api)\.(get|post|put|patch|delete|route)\s*\(\s*['"]([^'"]+)['"]/gm;
+  while ((match = routeDecoratorRegex.exec(source)) !== null) {
+    const method = match[1] === 'route' ? 'GET' : match[1].toUpperCase();
+    const routePath = match[2];
+    // Find the function name on the next line
+    const afterDecorator = source.slice(match.index + match[0].length);
+    const funcMatch = /^\s*\)?\s*\n\s*(?:async\s+)?def\s+(\w+)/m.exec(afterDecorator);
+    const handler = funcMatch ? funcMatch[1] : 'handler';
+    const key = `${method} ${routePath}`;
+    elements.apiEndpoints.set(key, { method, path: routePath, handlers: [handler] });
+  }
+
+  // Detect Celery task decorators
+  const celeryTaskRegex = /^@(?:app|celery)\.task(?:\(.*?\))?\s*\n\s*(?:async\s+)?def\s+(\w+)/gm;
+  while ((match = celeryTaskRegex.exec(source)) !== null) {
+    const name = match[1];
+    addToSet(name, foundItems.functions, elements.functions);
   }
 
   // Extract function definitions (def / async def), skip private and dunder
@@ -716,6 +1129,24 @@ export function traversePythonSource(
       elements.imports.libraries.push(topMod);
     }
   }
+}
+
+/** Extract field names from a Python model class body (simplified heuristic). */
+function extractPythonModelFields(source: string, className: string): string[] {
+  const classStart = source.indexOf(`class ${className}`);
+  if (classStart === -1) return [];
+  const afterClass = source.slice(classStart);
+  // Find indented lines until next class/def at same level
+  const lines = afterClass.split('\n').slice(1);
+  const fields: string[] = [];
+  for (const line of lines) {
+    if (/^\S/.test(line) && line.trim().length > 0) break; // Reached next top-level definition
+    const fieldMatch = /^\s+(\w+)\s*=\s*(?:models\.\w+|db\.Column|Column)/.exec(line);
+    if (fieldMatch) {
+      fields.push(fieldMatch[1]);
+    }
+  }
+  return fields;
 }
 
 // ---------------------------------------------------------------------------

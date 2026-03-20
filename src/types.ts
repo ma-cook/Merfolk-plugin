@@ -78,6 +78,10 @@ export interface Elements {
   services: string[];
   stores: string[];
   utilities: string[];
+  classes: string[];
+  interfaces: string[];
+  variables: string[];
+  constants: string[];
   imports: {
     libraries: string[];
   };
@@ -87,6 +91,18 @@ export interface Elements {
   fileContainers: Map<string, FileContainerInfo>; // key = filePath
   internalHelperComponents: InternalHelperComponent[];
   rawCallSites: RawCallSite[];                     // per-call-site (NOT deduplicated)
+  nextjsRouteMap: Map<string, NextjsRouteInfo>;
+  apiEndpoints: Map<string, ApiEndpointInfo>;
+  dbModels: Map<string, DbModelInfo>;
+  authGuards: Set<string>;
+  authFlows: AuthFlow[];
+  eventEmitters: Map<string, Set<string>>;
+  eventListeners: Map<string, Set<string>>;
+  errorBoundaries: Set<string>;
+  suspenseBoundaries: Set<string>;
+  errorContainment: Map<string, Set<string>>;
+  sharedInterfaces: Map<string, SharedInterfaceInfo>;
+  interfaceUsages: Map<string, Set<string>>;
 }
 
 // Track what's already found to avoid duplicates
@@ -155,4 +171,31 @@ export interface NextjsRouteInfo {
   isMiddleware: boolean;
   isApi: boolean;
   filePath: string;
+}
+
+// API endpoint info
+export interface ApiEndpointInfo {
+  method: string;
+  path: string;
+  handlers: string[];
+}
+
+// Database model info
+export interface DbModelInfo {
+  fields: string[];
+  type: string; // 'mongoose' | 'prisma' | 'sequelize' | 'sqlalchemy' | 'django'
+}
+
+// Auth flow connection
+export interface AuthFlow {
+  source: string;
+  target: string;
+  type: string; // 'redirect' | 'verify' | 'protect'
+}
+
+// Shared interface / type alias info
+export interface SharedInterfaceInfo {
+  name: string;
+  filePath: string;
+  kind: 'interface' | 'type';
 }

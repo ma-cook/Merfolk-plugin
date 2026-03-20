@@ -6,7 +6,7 @@ import type { Elements, FoundItems } from './types';
 import { scanWorkspace } from './scanner/workspaceScanner';
 import { detectRepoType } from './scanner/repoTypeDetector';
 import { analyzeFile } from './scanner/fileAnalyzer';
-import { traverseReactAST, traverseVanillaAST, traversePythonSource, traverseVueSource } from './scanner/astTraversal';
+import { traverseReactAST, traverseVanillaAST, traversePythonSource, traverseVueSource, buildNextjsRouteMap } from './scanner/astTraversal';
 import { generateMerfolkMarkdown } from './scanner/merfolkGenerator';
 
 export function activate(context: ExtensionContext): void {
@@ -37,6 +37,10 @@ export function activate(context: ExtensionContext): void {
           services: [],
           stores: [],
           utilities: [],
+          classes: [],
+          interfaces: [],
+          variables: [],
+          constants: [],
           imports: { libraries: [] },
           componentInternalFunctions: [],
           componentRelationships: [],
@@ -44,6 +48,18 @@ export function activate(context: ExtensionContext): void {
           fileContainers: new Map(),
           internalHelperComponents: [],
           rawCallSites: [],
+          nextjsRouteMap: new Map(),
+          apiEndpoints: new Map(),
+          dbModels: new Map(),
+          authGuards: new Set(),
+          authFlows: [],
+          eventEmitters: new Map(),
+          eventListeners: new Map(),
+          errorBoundaries: new Set(),
+          suspenseBoundaries: new Set(),
+          errorContainment: new Map(),
+          sharedInterfaces: new Map(),
+          interfaceUsages: new Map(),
         };
 
         const foundItems: FoundItems = {
@@ -81,6 +97,11 @@ export function activate(context: ExtensionContext): void {
           } catch {
             // skip files that cannot be parsed
           }
+        }
+
+        // Build Next.js route map for nextjs projects
+        if (repoType === 'nextjs') {
+          buildNextjsRouteMap(files.map(f => f.path), elements);
         }
 
         const markdown = generateMerfolkMarkdown(elements, repoName, repoType);

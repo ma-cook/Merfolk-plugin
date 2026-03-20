@@ -10,6 +10,10 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     services: [],
     stores: [],
     utilities: [],
+    classes: [],
+    interfaces: [],
+    variables: [],
+    constants: [],
     imports: { libraries: [] },
     componentInternalFunctions: [],
     componentRelationships: [],
@@ -17,6 +21,18 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     fileContainers: new Map(),
     internalHelperComponents: [],
     rawCallSites: [],
+    nextjsRouteMap: new Map(),
+    apiEndpoints: new Map(),
+    dbModels: new Map(),
+    authGuards: new Set(),
+    authFlows: [],
+    eventEmitters: new Map(),
+    eventListeners: new Map(),
+    errorBoundaries: new Set(),
+    suspenseBoundaries: new Set(),
+    errorContainment: new Map(),
+    sharedInterfaces: new Map(),
+    interfaceUsages: new Map(),
     ...overrides,
   };
 }
@@ -416,5 +432,195 @@ describe('generateMerfolkMarkdown', () => {
       'react'
     );
     expect(result).not.toContain('unknownFunction');
+  });
+
+  it('emits %% Classes section with [[Class: name]] syntax', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ classes: ['DataManager', 'ApiClient'] }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Classes');
+    expect(result).toContain('DataManager[[Class: DataManager]]');
+    expect(result).toContain('ApiClient[[Class: ApiClient]]');
+  });
+
+  it('emits %% Shared Interfaces section with {{Interface: name}} syntax', () => {
+    const sharedInterfaces = new Map();
+    sharedInterfaces.set('UserProfile', { name: 'UserProfile', filePath: 'src/types.ts', kind: 'interface' as const });
+    const result = generateMerfolkMarkdown(
+      makeElements({ sharedInterfaces }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Shared Interfaces');
+    expect(result).toContain('{{Interface: UserProfile}}');
+  });
+
+  it('emits %% Interface Usages section', () => {
+    const sharedInterfaces = new Map();
+    sharedInterfaces.set('UserProfile', { name: 'UserProfile', filePath: 'src/types.ts', kind: 'interface' as const });
+    const interfaceUsages = new Map();
+    interfaceUsages.set('UserProfile', new Set(['UserCard', 'ProfilePage']));
+    const result = generateMerfolkMarkdown(
+      makeElements({ sharedInterfaces, interfaceUsages }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Interface Usages');
+    expect(result).toContain('UserCard --> UserProfile : "uses type"');
+    expect(result).toContain('ProfilePage --> UserProfile : "uses type"');
+  });
+
+  it('emits %% Next.js Route Hierarchy section', () => {
+    const nextjsRouteMap = new Map();
+    nextjsRouteMap.set('/app/page.tsx', {
+      segment: '', routePath: '/', parentRoutePath: '/',
+      isLayout: false, isPage: true, isLoading: false, isError: false,
+      isNotFound: false, isAppShell: false, isDocument: false,
+      isMiddleware: false, isApi: false, filePath: '/app/page.tsx',
+    });
+    nextjsRouteMap.set('/app/dashboard/page.tsx', {
+      segment: 'dashboard', routePath: '/dashboard', parentRoutePath: '/',
+      isLayout: false, isPage: true, isLoading: false, isError: false,
+      isNotFound: false, isAppShell: false, isDocument: false,
+      isMiddleware: false, isApi: false, filePath: '/app/dashboard/page.tsx',
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({ nextjsRouteMap }),
+      'my-app',
+      'nextjs'
+    );
+    expect(result).toContain('%% Next.js Route Hierarchy');
+    expect(result).toContain('Page: /');
+    expect(result).toContain('Page: /dashboard');
+    expect(result).toContain('"contains"');
+  });
+
+  it('emits %% API Endpoints section', () => {
+    const apiEndpoints = new Map();
+    apiEndpoints.set('GET /api/users', { method: 'GET', path: '/api/users', handlers: ['getUsers'] });
+    const result = generateMerfolkMarkdown(
+      makeElements({ apiEndpoints }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% API Endpoints');
+    expect(result).toContain('API: GET /api/users');
+    expect(result).toContain('"handled by"');
+  });
+
+  it('emits %% Database Models section', () => {
+    const dbModels = new Map();
+    dbModels.set('User', { fields: ['name', 'email'], type: 'mongoose' });
+    const result = generateMerfolkMarkdown(
+      makeElements({ dbModels }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Database Models');
+    expect(result).toContain('[(Model: User)]');
+  });
+
+  it('emits %% Auth Guards section', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ authGuards: new Set(['requireJwt', 'isAdmin']) }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Auth Guards');
+    expect(result).toContain('[/Auth Guard: requireJwt/]');
+    expect(result).toContain('[/Auth Guard: isAdmin/]');
+  });
+
+  it('emits %% Auth Flows section', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        authFlows: [{ source: 'login', target: 'dashboard', type: 'redirect' }],
+      }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Auth Flows');
+    expect(result).toContain('login --> dashboard : "redirect"');
+  });
+
+  it('emits %% Event Emitters section', () => {
+    const eventEmitters = new Map<string, Set<string>>();
+    eventEmitters.set('bus', new Set(['userUpdated']));
+    const eventListeners = new Map<string, Set<string>>();
+    eventListeners.set('bus', new Set(['userUpdated']));
+    const result = generateMerfolkMarkdown(
+      makeElements({ eventEmitters, eventListeners }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Event Emitters');
+    expect(result).toContain('[Emitter: bus]');
+    expect(result).toContain('"emits"');
+    expect(result).toContain('"listens"');
+  });
+
+  it('emits %% Error Boundaries section', () => {
+    const errorContainment = new Map<string, Set<string>>();
+    errorContainment.set('ErrorBoundary', new Set(['Dashboard']));
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        errorBoundaries: new Set(['ErrorBoundary']),
+        errorContainment,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Error Boundaries');
+    expect(result).toContain('[/Error Boundary: ErrorBoundary/]');
+    expect(result).toContain('ErrorBoundary --> Dashboard : "catches errors from"');
+  });
+
+  it('emits %% Suspense Boundaries section', () => {
+    const errorContainment = new Map<string, Set<string>>();
+    errorContainment.set('App', new Set(['LazyComponent']));
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        suspenseBoundaries: new Set(['App']),
+        errorContainment,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Suspense Boundaries');
+    expect(result).toContain('[/Suspense: App/]');
+    expect(result).toContain('App --> LazyComponent : "suspends"');
+  });
+
+  it('emits %% Worker Modules for worker file containers', () => {
+    const containers = new Map();
+    containers.set('/src/workers/dataWorker.ts', {
+      type: 'Function',
+      functions: new Set(['processData']),
+      nodeId: 'dataWorker',
+      displayName: 'dataWorker',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({ fileContainers: containers }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Worker Modules');
+    expect(result).toContain('[Worker: dataWorker]');
+  });
+
+  it('does not emit empty new sections', () => {
+    const result = generateMerfolkMarkdown(makeElements(), 'repo', 'vanilla');
+    expect(result).not.toContain('%% Classes');
+    expect(result).not.toContain('%% Shared Interfaces');
+    expect(result).not.toContain('%% API Endpoints');
+    expect(result).not.toContain('%% Database Models');
+    expect(result).not.toContain('%% Auth Guards');
+    expect(result).not.toContain('%% Event Emitters');
+    expect(result).not.toContain('%% Error Boundaries');
+    expect(result).not.toContain('%% Suspense Boundaries');
+    expect(result).not.toContain('%% Worker Modules');
   });
 });

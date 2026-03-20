@@ -4,6 +4,7 @@ import {
   traversePythonSource,
   traverseVueSource,
   traverseReactAST,
+  buildNextjsRouteMap,
 } from '../../src/scanner/astTraversal';
 import type { Elements, FoundItems, FileContext } from '../../src/types';
 
@@ -15,6 +16,10 @@ function makeElements(): Elements {
     services: [],
     stores: [],
     utilities: [],
+    classes: [],
+    interfaces: [],
+    variables: [],
+    constants: [],
     imports: { libraries: [] },
     componentInternalFunctions: [],
     componentRelationships: [],
@@ -22,6 +27,18 @@ function makeElements(): Elements {
     fileContainers: new Map(),
     internalHelperComponents: [],
     rawCallSites: [],
+    nextjsRouteMap: new Map(),
+    apiEndpoints: new Map(),
+    dbModels: new Map(),
+    authGuards: new Set(),
+    authFlows: [],
+    eventEmitters: new Map(),
+    eventListeners: new Map(),
+    errorBoundaries: new Set(),
+    suspenseBoundaries: new Set(),
+    errorContainment: new Map(),
+    sharedInterfaces: new Map(),
+    interfaceUsages: new Map(),
   };
 }
 
@@ -1252,5 +1269,455 @@ describe('deep call-site traversal (rawCallSites)', () => {
     expect(site).toBeDefined();
     expect(site?.caller).toBe('SphereRenderer');
     expect(site?.calleeName).toBe('useStore');
+  });
+});
+
+describe('class and interface extraction', () => {
+  it('tracks class declarations in elements.classes', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ClassDeclaration',
+            id: { name: 'DataManager' },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/services/data.ts', makeFileContext({ isService: true }), elements, foundItems);
+    expect(elements.classes).toContain('DataManager');
+    expect(elements.services).toContain('DataManager');
+  });
+
+  it('extracts exported TypeScript interfaces into sharedInterfaces', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'TSInterfaceDeclaration',
+              id: { name: 'UserProfile' },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/types/user.ts', makeFileContext(), elements, foundItems);
+    expect(elements.interfaces).toContain('UserProfile');
+    expect(elements.sharedInterfaces.has('UserProfile')).toBe(true);
+    expect(elements.sharedInterfaces.get('UserProfile')?.kind).toBe('interface');
+  });
+
+  it('extracts exported TypeScript type aliases into sharedInterfaces', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'TSTypeAliasDeclaration',
+              id: { name: 'Theme' },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/types/theme.ts', makeFileContext(), elements, foundItems);
+    expect(elements.interfaces).toContain('Theme');
+    expect(elements.sharedInterfaces.get('Theme')?.kind).toBe('type');
+  });
+
+  it('tracks Python classes in elements.classes', () => {
+    const source = 'class ApiService:\n    pass\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'services/api.py', makeFileContext({ isService: true }), elements, foundItems);
+    expect(elements.classes).toContain('ApiService');
+  });
+});
+
+describe('event emitter detection', () => {
+  it('detects EventEmitter creation in variable declarations', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'VariableDeclaration',
+              declarations: [
+                {
+                  type: 'VariableDeclarator',
+                  id: { name: 'bus' },
+                  init: {
+                    type: 'NewExpression',
+                    callee: { name: 'EventEmitter' },
+                    arguments: [],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/events/bus.ts', makeFileContext({ isUtil: true }), elements, foundItems);
+    expect(elements.eventEmitters.has('bus')).toBe(true);
+  });
+
+  it('detects .emit() and .on() event patterns', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExpressionStatement',
+            expression: {
+              type: 'CallExpression',
+              callee: {
+                type: 'MemberExpression',
+                object: { type: 'Identifier', name: 'bus' },
+                property: { type: 'Identifier', name: 'emit' },
+              },
+              arguments: [{ type: 'StringLiteral', value: 'userUpdated' }],
+            },
+          },
+          {
+            type: 'ExpressionStatement',
+            expression: {
+              type: 'CallExpression',
+              callee: {
+                type: 'MemberExpression',
+                object: { type: 'Identifier', name: 'bus' },
+                property: { type: 'Identifier', name: 'on' },
+              },
+              arguments: [{ type: 'StringLiteral', value: 'userUpdated' }],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/events/handlers.ts', makeFileContext(), elements, foundItems);
+    expect(elements.eventEmitters.get('bus')?.has('userUpdated')).toBe(true);
+    expect(elements.eventListeners.get('bus')?.has('userUpdated')).toBe(true);
+  });
+});
+
+describe('API endpoint detection', () => {
+  it('detects Express-style route registrations', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExpressionStatement',
+            expression: {
+              type: 'CallExpression',
+              callee: {
+                type: 'MemberExpression',
+                object: { type: 'Identifier', name: 'app' },
+                property: { type: 'Identifier', name: 'get' },
+              },
+              arguments: [
+                { type: 'StringLiteral', value: '/api/users' },
+                { type: 'Identifier', name: 'getUsers' },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/routes/users.ts', makeFileContext({ isBackend: true }), elements, foundItems);
+    expect(elements.apiEndpoints.has('GET /api/users')).toBe(true);
+    expect(elements.apiEndpoints.get('GET /api/users')?.handlers).toContain('getUsers');
+  });
+
+  it('detects Next.js API route handler exports', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'GET' },
+              body: { type: 'BlockStatement', body: [] },
+            },
+          },
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'POST' },
+              body: { type: 'BlockStatement', body: [] },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'app/api/users/route.ts', makeFileContext({ isBackend: true }), elements, foundItems);
+    expect(elements.apiEndpoints.has('GET /api/users')).toBe(true);
+    expect(elements.apiEndpoints.has('POST /api/users')).toBe(true);
+  });
+
+  it('detects Flask/FastAPI route decorators in Python', () => {
+    const source = '@app.get("/api/users")\ndef list_users():\n    pass\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'routes.py', makeFileContext({ isBackend: true }), elements, foundItems);
+    expect(elements.apiEndpoints.has('GET /api/users')).toBe(true);
+    expect(elements.apiEndpoints.get('GET /api/users')?.handlers).toContain('list_users');
+  });
+});
+
+describe('database model detection', () => {
+  it('detects Mongoose Schema creation', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'VariableDeclaration',
+              declarations: [
+                {
+                  type: 'VariableDeclarator',
+                  id: { name: 'UserSchema' },
+                  init: {
+                    type: 'NewExpression',
+                    callee: { name: 'Schema' },
+                    arguments: [
+                      {
+                        type: 'ObjectExpression',
+                        properties: [
+                          { key: { name: 'name' } },
+                          { key: { name: 'email' } },
+                        ],
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/models/user.ts', makeFileContext({ isModel: true }), elements, foundItems);
+    expect(elements.dbModels.has('UserSchema')).toBe(true);
+    expect(elements.dbModels.get('UserSchema')?.type).toBe('mongoose');
+    expect(elements.dbModels.get('UserSchema')?.fields).toContain('name');
+    expect(elements.dbModels.get('UserSchema')?.fields).toContain('email');
+  });
+
+  it('detects Django model classes in Python', () => {
+    const source = 'class User(models.Model):\n    name = models.CharField(max_length=100)\n    email = models.EmailField()\n';
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traversePythonSource(source, 'models/user.py', makeFileContext({ isModel: true }), elements, foundItems);
+    expect(elements.dbModels.has('User')).toBe(true);
+    expect(elements.dbModels.get('User')?.type).toBe('django');
+    expect(elements.dbModels.get('User')?.fields).toContain('name');
+    expect(elements.dbModels.get('User')?.fields).toContain('email');
+  });
+});
+
+describe('auth guard detection', () => {
+  it('detects passport.authenticate() pattern', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'VariableDeclaration',
+              declarations: [
+                {
+                  type: 'VariableDeclarator',
+                  id: { name: 'requireJwt' },
+                  init: {
+                    type: 'CallExpression',
+                    callee: {
+                      type: 'MemberExpression',
+                      object: { type: 'Identifier', name: 'passport' },
+                      property: { type: 'Identifier', name: 'authenticate' },
+                    },
+                    arguments: [{ type: 'StringLiteral', value: 'jwt' }],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/middleware/auth.ts', makeFileContext({ isMiddleware: true }), elements, foundItems);
+    expect(elements.authGuards.has('requireJwt')).toBe(true);
+  });
+});
+
+describe('error boundary and suspense detection', () => {
+  it('detects React error boundary class components', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'ClassDeclaration',
+              id: { name: 'ErrorBoundary' },
+              superClass: {
+                type: 'MemberExpression',
+                object: { name: 'React' },
+                property: { name: 'Component' },
+              },
+              body: {
+                type: 'ClassBody',
+                body: [
+                  {
+                    type: 'ClassMethod',
+                    key: { name: 'componentDidCatch' },
+                  },
+                  {
+                    type: 'ClassMethod',
+                    key: { name: 'render' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/ErrorBoundary.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    expect(elements.errorBoundaries.has('ErrorBoundary')).toBe(true);
+    expect(elements.components).toContain('ErrorBoundary');
+  });
+
+  it('detects Suspense usage in JSX', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportDefaultDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'App' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ReturnStatement',
+                    argument: {
+                      type: 'JSXElement',
+                      openingElement: {
+                        name: { type: 'JSXIdentifier', name: 'Suspense' },
+                        attributes: [
+                          {
+                            type: 'JSXAttribute',
+                            name: { name: 'fallback' },
+                          },
+                        ],
+                      },
+                      children: [
+                        {
+                          type: 'JSXElement',
+                          openingElement: {
+                            name: { type: 'JSXIdentifier', name: 'Dashboard' },
+                            attributes: [],
+                          },
+                          children: [],
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    expect(elements.suspenseBoundaries.has('App')).toBe(true);
+    expect(elements.errorContainment.get('App')?.has('Dashboard')).toBe(true);
+  });
+});
+
+describe('buildNextjsRouteMap', () => {
+  it('builds route map from app directory file paths', () => {
+    const elements = makeElements();
+    const filePaths = [
+      '/project/app/page.tsx',
+      '/project/app/layout.tsx',
+      '/project/app/dashboard/page.tsx',
+      '/project/app/api/users/route.ts',
+    ];
+    buildNextjsRouteMap(filePaths, elements);
+    expect(elements.nextjsRouteMap.size).toBe(4);
+
+    const rootPage = elements.nextjsRouteMap.get('/project/app/page.tsx');
+    expect(rootPage?.isPage).toBe(true);
+    expect(rootPage?.routePath).toBe('/');
+
+    const rootLayout = elements.nextjsRouteMap.get('/project/app/layout.tsx');
+    expect(rootLayout?.isLayout).toBe(true);
+    expect(rootLayout?.isAppShell).toBe(true);
+
+    const dashboardPage = elements.nextjsRouteMap.get('/project/app/dashboard/page.tsx');
+    expect(dashboardPage?.isPage).toBe(true);
+    expect(dashboardPage?.routePath).toBe('/dashboard');
+
+    const apiRoute = elements.nextjsRouteMap.get('/project/app/api/users/route.ts');
+    expect(apiRoute?.isApi).toBe(true);
+  });
+
+  it('ignores non-route files', () => {
+    const elements = makeElements();
+    buildNextjsRouteMap(['/project/app/components/Button.tsx'], elements);
+    expect(elements.nextjsRouteMap.size).toBe(0);
   });
 });

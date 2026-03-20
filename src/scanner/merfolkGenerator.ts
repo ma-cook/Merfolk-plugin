@@ -289,6 +289,195 @@ export function generateMerfolkMarkdown(
     lines.push('');
   }
 
+  // %% Classes
+  const classes = [...new Set(elements.classes ?? [])];
+  if (classes.length > 0) {
+    lines.push('%% Classes');
+    for (const cls of classes) {
+      lines.push(`${cls}[[Class: ${cls}]]`);
+    }
+    lines.push('');
+  }
+
+  // %% Shared Interfaces
+  const sharedInterfaces = elements.sharedInterfaces ?? new Map();
+  if (sharedInterfaces.size > 0) {
+    lines.push('%% Shared Interfaces');
+    for (const [name] of sharedInterfaces) {
+      lines.push(`${sanitizeNodeId(name)}{{Interface: ${name}}}`);
+    }
+    lines.push('');
+  }
+
+  // %% Interface Usages
+  const interfaceUsages = elements.interfaceUsages ?? new Map();
+  if (interfaceUsages.size > 0) {
+    lines.push('%% Interface Usages');
+    for (const [ifaceName, users] of interfaceUsages) {
+      const ifaceId = sanitizeNodeId(ifaceName);
+      for (const user of users) {
+        lines.push(`${user} --> ${ifaceId} : "uses type"`);
+      }
+    }
+    lines.push('');
+  }
+
+  // %% Next.js Route Hierarchy
+  const nextjsRouteMap = elements.nextjsRouteMap ?? new Map();
+  if (nextjsRouteMap.size > 0) {
+    lines.push('%% Next.js Route Hierarchy');
+    const routeNodes: Map<string, string> = new Map(); // routePath → nodeId
+    for (const [, info] of nextjsRouteMap) {
+      const nodeId = sanitizeNodeId(info.routePath === '/' ? 'route_root' : `route_${info.routePath.replace(/\//g, '_')}`);
+      const nodeLabel = info.isLayout ? 'Layout'
+        : info.isPage ? 'Page'
+          : info.isApi ? 'API Route'
+            : info.isLoading ? 'Loading'
+              : info.isError ? 'Error'
+                : 'Route';
+      if (!routeNodes.has(info.routePath)) {
+        routeNodes.set(info.routePath, nodeId);
+        lines.push(`${nodeId}[${nodeLabel}: ${info.routePath || '/'}]`);
+      }
+    }
+    // Parent-child nesting connections
+    for (const [, info] of nextjsRouteMap) {
+      if (info.parentRoutePath && info.routePath !== info.parentRoutePath) {
+        const parentNodeId = routeNodes.get(info.parentRoutePath);
+        const childNodeId = routeNodes.get(info.routePath);
+        if (parentNodeId && childNodeId && parentNodeId !== childNodeId) {
+          lines.push(`${parentNodeId} --> ${childNodeId} : "contains"`);
+        }
+      }
+    }
+    lines.push('');
+  }
+
+  // %% API Endpoints
+  const apiEndpoints = elements.apiEndpoints ?? new Map();
+  if (apiEndpoints.size > 0) {
+    lines.push('%% API Endpoints');
+    for (const [key, info] of apiEndpoints) {
+      const nodeId = sanitizeNodeId(`api_${info.method}_${info.path.replace(/\//g, '_')}`);
+      lines.push(`${nodeId}((API: ${info.method} ${info.path}))`);
+      for (const handler of info.handlers) {
+        lines.push(`${nodeId} --> ${handler} : "handled by"`);
+      }
+    }
+    lines.push('');
+  }
+
+  // %% Database Models
+  const dbModels = elements.dbModels ?? new Map();
+  if (dbModels.size > 0) {
+    lines.push('%% Database Models');
+    for (const [name, info] of dbModels) {
+      const nodeId = sanitizeNodeId(name);
+      lines.push(`${nodeId}[(Model: ${name})]`);
+    }
+    lines.push('');
+  }
+
+  // %% Auth Guards
+  const authGuards = elements.authGuards ?? new Set();
+  if (authGuards.size > 0) {
+    lines.push('%% Auth Guards');
+    for (const guard of authGuards) {
+      const nodeId = sanitizeNodeId(guard);
+      lines.push(`${nodeId}[/Auth Guard: ${guard}/]`);
+    }
+    lines.push('');
+  }
+
+  // %% Auth Flows
+  const authFlows = elements.authFlows ?? [];
+  if (authFlows.length > 0) {
+    lines.push('%% Auth Flows');
+    for (const flow of authFlows) {
+      lines.push(`${sanitizeNodeId(flow.source)} --> ${sanitizeNodeId(flow.target)} : "${flow.type}"`);
+    }
+    lines.push('');
+  }
+
+  // %% Event Emitters
+  const eventEmitters = elements.eventEmitters ?? new Map();
+  const eventListeners = elements.eventListeners ?? new Map();
+  if (eventEmitters.size > 0 || eventListeners.size > 0) {
+    lines.push('%% Event Emitters');
+    const allEmitterNames = new Set([...eventEmitters.keys(), ...eventListeners.keys()]);
+    for (const name of allEmitterNames) {
+      const nodeId = sanitizeNodeId(name);
+      lines.push(`${nodeId}[Emitter: ${name}]`);
+    }
+    for (const [name, events] of eventEmitters) {
+      const nodeId = sanitizeNodeId(name);
+      for (const event of events) {
+        lines.push(`${nodeId} --> ${sanitizeNodeId(event)} : "emits"`);
+      }
+    }
+    for (const [name, events] of eventListeners) {
+      const nodeId = sanitizeNodeId(name);
+      for (const event of events) {
+        lines.push(`${sanitizeNodeId(event)} --> ${nodeId} : "listens"`);
+      }
+    }
+    lines.push('');
+  }
+
+  // %% Error Boundaries
+  const errorBoundaries = elements.errorBoundaries ?? new Set();
+  if (errorBoundaries.size > 0) {
+    lines.push('%% Error Boundaries');
+    for (const boundary of errorBoundaries) {
+      lines.push(`${boundary}[/Error Boundary: ${boundary}/]`);
+    }
+    const errorContainment = elements.errorContainment ?? new Map();
+    for (const [boundary, contained] of errorContainment) {
+      if (errorBoundaries.has(boundary)) {
+        for (const child of contained) {
+          lines.push(`${boundary} --> ${child} : "catches errors from"`);
+        }
+      }
+    }
+    lines.push('');
+  }
+
+  // %% Suspense Boundaries
+  const suspenseBoundaries = elements.suspenseBoundaries ?? new Set();
+  if (suspenseBoundaries.size > 0) {
+    lines.push('%% Suspense Boundaries');
+    for (const boundary of suspenseBoundaries) {
+      lines.push(`${boundary}[/Suspense: ${boundary}/]`);
+    }
+    const errorContainment = elements.errorContainment ?? new Map();
+    for (const [boundary, contained] of errorContainment) {
+      if (suspenseBoundaries.has(boundary)) {
+        for (const child of contained) {
+          lines.push(`${boundary} --> ${child} : "suspends"`);
+        }
+      }
+    }
+    lines.push('');
+  }
+
+  // %% Worker Modules
+  const workerModules: string[] = [];
+  for (const [, info] of fileContainers) {
+    // Check if file path suggests worker
+    const stem = info.displayName;
+    if (/[Ww]orker/.test(stem)) {
+      workerModules.push(stem);
+    }
+  }
+  if (workerModules.length > 0) {
+    lines.push('%% Worker Modules');
+    for (const worker of workerModules) {
+      const nodeId = sanitizeNodeId(worker);
+      lines.push(`${nodeId}[Worker: ${worker}]`);
+    }
+    lines.push('');
+  }
+
   // Close code fence
   lines.push('```');
 

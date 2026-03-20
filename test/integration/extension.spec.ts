@@ -29,9 +29,14 @@ describe('Merfolk Plugin E2E', () => {
     const output = generateMerfolkMarkdown(
       {
         components: [], functions: [], hooks: [], services: [], stores: [], utilities: [],
+        classes: [], interfaces: [], variables: [], constants: [],
         imports: { libraries: [] },
         componentInternalFunctions: [], componentRelationships: [], componentDependencies: [],
         fileContainers: new Map(), internalHelperComponents: [], rawCallSites: [],
+        nextjsRouteMap: new Map(), apiEndpoints: new Map(), dbModels: new Map(),
+        authGuards: new Set(), authFlows: [], eventEmitters: new Map(), eventListeners: new Map(),
+        errorBoundaries: new Set(), suspenseBoundaries: new Set(), errorContainment: new Map(),
+        sharedInterfaces: new Map(), interfaceUsages: new Map(),
       },
       'react-project',
       repoType
@@ -104,9 +109,14 @@ describe('Merfolk Plugin E2E', () => {
     const output = generateMerfolkMarkdown(
       {
         components: [], functions: [], hooks: [], services: [], stores: [], utilities: [],
+        classes: [], interfaces: [], variables: [], constants: [],
         imports: { libraries: [] },
         componentInternalFunctions: [], componentRelationships: [], componentDependencies: [],
         fileContainers: new Map(), internalHelperComponents: [], rawCallSites: [],
+        nextjsRouteMap: new Map(), apiEndpoints: new Map(), dbModels: new Map(),
+        authGuards: new Set(), authFlows: [], eventEmitters: new Map(), eventListeners: new Map(),
+        errorBoundaries: new Set(), suspenseBoundaries: new Set(), errorContainment: new Map(),
+        sharedInterfaces: new Map(), interfaceUsages: new Map(),
       },
       'react-project',
       repoType
