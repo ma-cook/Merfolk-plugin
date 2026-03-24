@@ -11,6 +11,7 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     stores: [],
     utilities: [],
     workers: [],
+    shaders: [],
     classes: [],
     interfaces: [],
     variables: [],
@@ -850,5 +851,16 @@ describe('generateMerfolkMarkdown', () => {
       'react'
     );
     expect(result).not.toContain('completelyUnknown');
+  });
+
+  it('emits %% Shaders section for shader elements', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ shaders: ['vertexShader', 'fragmentShader'] }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Shaders');
+    expect(result).toContain('[Shader: vertexShader]');
+    expect(result).toContain('[Shader: fragmentShader]');
   });
 });

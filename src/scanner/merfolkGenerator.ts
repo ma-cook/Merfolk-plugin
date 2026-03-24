@@ -604,6 +604,17 @@ export function generateMerfolkMarkdown(
     lines.push('');
   }
 
+  // %% Shaders
+  const shaders = [...new Set(elements.shaders ?? [])];
+  if (shaders.length > 0) {
+    lines.push('%% Shaders');
+    for (const shader of shaders) {
+      const nodeId = sanitizeNodeId(shader);
+      lines.push(`${nodeId}[Shader: ${shader}]`);
+    }
+    lines.push('');
+  }
+
   // %% Store Usage Details
   const storeUsage = elements.storeUsageRelationships ?? new Map<string, Map<string, { properties: Set<string>; actions: Set<string> }>>();
   const storeUsageLines: string[] = [];
