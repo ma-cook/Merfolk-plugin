@@ -88,8 +88,33 @@ export function activate(context: ExtensionContext): void {
               const { parse } = await import('@babel/parser');
               const ast = parse(source, {
                 sourceType: 'module',
-                plugins: ['typescript', 'jsx'],
+                plugins: [
+                  'jsx',
+                  'typescript',
+                  'decorators-legacy',
+                  'classProperties',
+                  'classPrivateProperties',
+                  'classPrivateMethods',
+                  'exportDefaultFrom',
+                  'exportNamespaceFrom',
+                  'dynamicImport',
+                  'nullishCoalescingOperator',
+                  'optionalChaining',
+                  'objectRestSpread',
+                  'asyncGenerators',
+                  'functionBind',
+                  'functionSent',
+                  'numericSeparator',
+                  'optionalCatchBinding',
+                  'throwExpressions',
+                  'topLevelAwait',
+                ],
                 errorRecovery: true,
+                allowImportExportEverywhere: true,
+                allowAwaitOutsideFunction: true,
+                allowReturnOutsideFunction: true,
+                allowSuperOutsideMethod: true,
+                allowUndeclaredExports: true,
               });
               if (repoType === 'react' || repoType === 'nextjs') {
                 traverseReactAST(ast, file.path, fileContext, elements, foundItems);
