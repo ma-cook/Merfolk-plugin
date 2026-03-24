@@ -6,7 +6,7 @@ import type { Elements, FoundItems } from './types';
 import { scanWorkspace } from './scanner/workspaceScanner';
 import { detectRepoType } from './scanner/repoTypeDetector';
 import { analyzeFile } from './scanner/fileAnalyzer';
-import { traverseReactAST, traverseVanillaAST, traversePythonSource, traverseVueSource, buildNextjsRouteMap } from './scanner/astTraversal';
+import { traverseReactAST, traverseVanillaAST, traversePythonSource, traverseVueSource, buildNextjsRouteMap, extractShaderSymbols } from './scanner/astTraversal';
 import { generateMerfolkMarkdown } from './scanner/merfolkGenerator';
 
 export function activate(context: ExtensionContext): void {
@@ -38,6 +38,7 @@ export function activate(context: ExtensionContext): void {
           stores: [],
           utilities: [],
           workers: [],
+          shaders: [],
           classes: [],
           interfaces: [],
           variables: [],
@@ -78,7 +79,10 @@ export function activate(context: ExtensionContext): void {
         for (const file of files) {
           const fileContext = analyzeFile(file.path, repoType);
           try {
-            if (file.type === 'python') {
+            if (file.type === 'shader') {
+              const source = fs.readFileSync(file.path, 'utf-8');
+              extractShaderSymbols(source, file.path, fileContext, elements, foundItems);
+            } else if (file.type === 'python') {
               const source = fs.readFileSync(file.path, 'utf-8');
               traversePythonSource(source, file.path, fileContext, elements, foundItems);
             } else if (file.type === 'vue') {

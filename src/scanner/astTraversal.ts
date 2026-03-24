@@ -1409,3 +1409,68 @@ export function traverseVueSource(
     }
   }
 }
+
+/**
+ * Extract shader symbols (uniforms and function definitions) from a GLSL/WGSL/HLSL
+ * source file using regex. Skips Babel parsing entirely.
+ */
+export function extractShaderSymbols(
+  source: string,
+  filePath: string,
+  fileContext: FileContext,
+  elements: Elements,
+  foundItems: FoundItems
+): void {
+  // Extract uniform declarations: uniform type name; (GLSL/HLSL)
+  const uniformRegex = /\buniform\s+\w+\s+(\w+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = uniformRegex.exec(source)) !== null) {
+    const name = match[1];
+    if (!elements.shaders.includes(name)) {
+      elements.shaders.push(name);
+    }
+    addToFileContainer(filePath, name, fileContext, elements);
+  }
+
+  // Extract GLSL/HLSL function definitions: returnType name(params) {
+  // Covers GLSL types (vec2/3/4, mat2/3/4, sampler*) and common HLSL types (float2-4, Texture2D, etc.)
+  const glslHlslFuncRegex = /\b(?:void|float[234]?|double|vec[234]|dvec[234]|ivec[234]|uvec[234]|bvec[234]|mat[234](?:x[234])?|int|uint|bool|sampler\w*|Texture\w*|SamplerState\w*)\s+(\w+)\s*\(/g;
+  while ((match = glslHlslFuncRegex.exec(source)) !== null) {
+    const name = match[1];
+    if (name === 'main') continue; // skip main entry point
+    if (!elements.shaders.includes(name)) {
+      elements.shaders.push(name);
+    }
+    addToFileContainer(filePath, name, fileContext, elements);
+  }
+
+  // Extract WGSL function definitions: fn name(params)
+  const wgslFuncRegex = /\bfn\s+(\w+)\s*\(/g;
+  while ((match = wgslFuncRegex.exec(source)) !== null) {
+    const name = match[1];
+    if (name === 'main') continue;
+    if (!elements.shaders.includes(name)) {
+      elements.shaders.push(name);
+    }
+    addToFileContainer(filePath, name, fileContext, elements);
+  }
+
+  // Group all shader symbols under a shared "shaders" container node
+  const shaderContainerName = 'shaders';
+  if (!elements.fileContainers.has(shaderContainerName)) {
+    elements.fileContainers.set(shaderContainerName, {
+      type: 'Function',
+      functions: new Set(),
+      nodeId: shaderContainerName,
+      displayName: shaderContainerName,
+      isBackend: false,
+    });
+  }
+  const container = elements.fileContainers.get(shaderContainerName)!;
+  for (const name of elements.shaders) {
+    container.functions.add(name);
+  }
+
+  // foundItems is included for API consistency with other traversal functions
+  void foundItems;
+}

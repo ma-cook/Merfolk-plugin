@@ -79,6 +79,7 @@ export interface Elements {
   stores: string[];
   utilities: string[];
   workers: string[];
+  shaders: string[];
   classes: string[];
   interfaces: string[];
   variables: string[];
