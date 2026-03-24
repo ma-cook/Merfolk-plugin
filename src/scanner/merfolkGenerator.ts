@@ -332,6 +332,7 @@ export function generateMerfolkMarkdown(
 
   // %% Component Relationships
   const compRels = elements.componentRelationships ?? [];
+  const compPropsRels = elements.componentPropsRelationships ?? new Map<string, Map<string, Set<string>>>();
   const validRels: Array<{ parent: string; child: string; propsStr: string }> = [];
   {
     const seenRels = new Set<string>();
@@ -348,7 +349,20 @@ export function generateMerfolkMarkdown(
   if (validRels.length > 0) {
     lines.push('%% Component Relationships');
     for (const rel of validRels) {
-      lines.push(...generateRoutedConnection(rel.parent, rel.child, rel.propsStr, childToParentMap, nodeIds, filesNeedingSuffix));
+      let label = rel.propsStr;
+      const propsMap = compPropsRels.get(rel.parent);
+      if (propsMap) {
+        const childProps = propsMap.get(rel.child);
+        if (childProps && childProps.size > 0) {
+          const propsList = [...childProps];
+          if (propsList.length <= 3) {
+            label = propsList.join(', ');
+          } else {
+            label = `${propsList.slice(0, 3).join(', ')}...`;
+          }
+        }
+      }
+      lines.push(...generateRoutedConnection(rel.parent, rel.child, label, childToParentMap, nodeIds, filesNeedingSuffix));
     }
     lines.push('');
   }

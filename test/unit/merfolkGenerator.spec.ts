@@ -26,6 +26,7 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     storeUsageRelationships: new Map(),
     hookReturnValueRelationships: new Map(),
     moduleImportRelationships: new Map(),
+    componentPropsRelationships: new Map(),
     nextjsRouteMap: new Map(),
     apiEndpoints: new Map(),
     dbModels: new Map(),
@@ -132,6 +133,27 @@ describe('generateMerfolkMarkdown', () => {
       'react'
     );
     expect(result).toContain('-->');
+  });
+
+  it('uses prop names from componentPropsRelationships in component relationship labels', () => {
+    const propsMap = new Map<string, Map<string, Set<string>>>();
+    const childMap = new Map<string, Set<string>>();
+    childMap.set('Button', new Set(['onClick', 'disabled', 'label']));
+    propsMap.set('App', childMap);
+
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        components: ['App', 'Button'],
+        componentRelationships: [{ parent: 'App', child: 'Button', props: ['uses'] }],
+        componentPropsRelationships: propsMap,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Component Relationships');
+    expect(result).toContain('onClick');
+    expect(result).toContain('disabled');
+    expect(result).toContain('label');
   });
 
   it('deduplicates elements across categories', () => {

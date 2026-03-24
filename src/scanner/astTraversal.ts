@@ -526,6 +526,17 @@ function walkNodeForJSX(
         child: childName,
         props: propNames.length > 0 ? propNames : ['uses'],
       });
+      if (propNames.length > 0) {
+        if (!elements.componentPropsRelationships.has(parentComponent)) {
+          elements.componentPropsRelationships.set(parentComponent, new Map());
+        }
+        const parentMap = elements.componentPropsRelationships.get(parentComponent)!;
+        if (!parentMap.has(childName)) {
+          parentMap.set(childName, new Set());
+        }
+        const propSet = parentMap.get(childName)!;
+        for (const p of propNames) propSet.add(p);
+      }
     }
     const children = n.children as unknown[] | undefined;
     if (children) {
