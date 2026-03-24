@@ -8,6 +8,12 @@ type ASTNode = Record<string, unknown>;
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Extract the filename stem (no directory, no extension) from a file path. */
+function getFileStem(filePath: string | undefined): string {
+  if (!filePath) return '';
+  return filePath.replace(/\\/g, '/').split('/').pop()?.replace(/\.[^.]+$/, '') ?? '';
+}
+
 function addToSet(
   name: string,
   set: Set<string>,
@@ -333,6 +339,13 @@ function processVanillaNode(
           const body = decl.body as ASTNode | undefined;
           if (body) deepWalkForCallSites(body, name, elements, 0);
         }
+        // Track exported symbols that share the file base name (need _file suffix on container)
+        if (filePath) {
+          const stem = getFileStem(filePath);
+          if (stem && name === stem) {
+            elements.filesNeedingSuffix.add(stem);
+          }
+        }
       }
     }
     return;
@@ -349,6 +362,13 @@ function processVanillaNode(
         if (dt === 'FunctionDeclaration' && !fileContext.isComponent) {
           const body = decl.body as ASTNode | undefined;
           if (body) deepWalkForCallSites(body, name, elements, 0);
+        }
+        // Track exported symbols that share the file base name (need _file suffix on container)
+        if (filePath) {
+          const stem = getFileStem(filePath);
+          if (stem && name === stem) {
+            elements.filesNeedingSuffix.add(stem);
+          }
         }
       }
     }
@@ -975,8 +995,9 @@ export function traverseReactAST(
   elements: Elements,
   foundItems: FoundItems
 ): void {
-  // Snapshot to detect components added in this file
+  // Snapshot to detect components and hooks added in this file
   const componentsBefore = new Set(foundItems.components);
+  const hooksBefore = new Set(foundItems.hooks);
   const relsBefore = elements.componentRelationships.length;
 
   // Base extraction via vanilla traversal
@@ -1043,6 +1064,23 @@ export function traverseReactAST(
             label: 'internal',
           });
         }
+      }
+    }
+  }
+
+  // Detect hook-in-hook-file: a hook whose name matches its containing file's
+  // base name (e.g. useAuth defined in useAuth.ts).  The file container must
+  // use a _file suffix to avoid an ID collision with the hook node.
+  // Also detect when a component file defines a hook with the same name.
+  const fileStem = getFileStem(filePath);
+  if (fileStem) {
+    const hookAddedHere = !hooksBefore.has(fileStem) && foundItems.hooks.has(fileStem);
+    if (hookAddedHere) {
+      if (fileContext.isHook || fileContext.isComposable) {
+        elements.filesNeedingSuffix.add(fileStem);
+        elements.internalHooks.set(fileStem, { parent: fileStem, parentType: 'hook' });
+      } else if (fileContext.isComponent) {
+        elements.internalHooks.set(fileStem, { parent: fileStem, parentType: 'component' });
       }
     }
   }

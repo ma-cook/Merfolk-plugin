@@ -4,11 +4,12 @@ import { sanitizeNodeId } from '../utils';
 /** Compute the final nodeId for a file container, resolving name collisions. */
 function computeContainerNodeId(
   info: FileContainerInfo,
-  allNames: Set<string>
+  allNames: Set<string>,
+  filesNeedingSuffix: Set<string>
 ): string {
   const stem = info.displayName;
   if (info.isBackend) return `backend_${stem}`;
-  if (allNames.has(stem)) return `${stem}_file`;
+  if (filesNeedingSuffix.has(stem) || allNames.has(stem)) return `${stem}_file`;
   return stem;
 }
 
@@ -117,32 +118,11 @@ export function generateMerfolkMarkdown(
     ...stores,
   ]);
 
-  // 5. Resolve file container nodeIds
-  const fileContainers = elements.fileContainers ?? new Map<string, FileContainerInfo>();
-  const resolvedContainers: Array<{ nodeId: string; info: FileContainerInfo }> = [];
-  const seenContainerIds = new Set<string>();
-
-  for (const [, info] of fileContainers) {
-    const nodeId = computeContainerNodeId(info, allNames);
-    if (!seenContainerIds.has(nodeId)) {
-      seenContainerIds.add(nodeId);
-      info.nodeId = nodeId;
-      resolvedContainers.push({ nodeId, info });
-    }
-  }
-
-  // 6. Build lookup: function name → file container nodeId
-  const funcToContainerNodeId = new Map<string, string>();
-  for (const { nodeId, info } of resolvedContainers) {
-    for (const fn of info.functions) {
-      funcToContainerNodeId.set(fn, nodeId);
-    }
-  }
-
-  // 7. Build filesNeedingSuffix: function/utility names that collide with a
-  //    component name.  These nodes are emitted as `name_file` and must be
-  //    resolved to that ID when used in connections.
-  const filesNeedingSuffix = new Set<string>();
+  // 5. Build filesNeedingSuffix early so computeContainerNodeId can use it.
+  //    Sources:
+  //    - elements.filesNeedingSuffix (populated by astTraversal for hook/file name collisions)
+  //    - function/utility names that collide with a component name
+  const filesNeedingSuffix = new Set<string>(elements.filesNeedingSuffix ?? []);
   for (const fn of functions_) {
     if (componentSet.has(fn)) filesNeedingSuffix.add(sanitizeNodeId(fn));
   }
@@ -150,11 +130,45 @@ export function generateMerfolkMarkdown(
     if (componentSet.has(util)) filesNeedingSuffix.add(sanitizeNodeId(util));
   }
 
+  // 6. Resolve file container nodeIds
+  const fileContainers = elements.fileContainers ?? new Map<string, FileContainerInfo>();
+  const resolvedContainers: Array<{ nodeId: string; info: FileContainerInfo }> = [];
+  const seenContainerIds = new Set<string>();
+
+  for (const [, info] of fileContainers) {
+    const nodeId = computeContainerNodeId(info, allNames, filesNeedingSuffix);
+    if (!seenContainerIds.has(nodeId)) {
+      seenContainerIds.add(nodeId);
+      info.nodeId = nodeId;
+      resolvedContainers.push({ nodeId, info });
+    }
+  }
+
+  // 7. Build lookup: function name → file container nodeId
+  const funcToContainerNodeId = new Map<string, string>();
+  for (const { nodeId, info } of resolvedContainers) {
+    for (const fn of info.functions) {
+      funcToContainerNodeId.set(fn, nodeId);
+    }
+  }
+
+  /** Resolve the container nodeId for an internalHook parent, applying _file suffix when needed. */
+  const resolveInternalHookParentId = (parent: string): string =>
+    filesNeedingSuffix.has(parent) ? `${parent}_file` : parent;
+
+  // Internal hooks map to their parent's _file container nodeId
+  for (const [hookName, { parent }] of elements.internalHooks ?? new Map()) {
+    if (!funcToContainerNodeId.has(hookName)) {
+      funcToContainerNodeId.set(hookName, resolveInternalHookParentId(parent));
+    }
+  }
+
   // 8. Build childToParentMap: maps every child symbol to its parent container.
   //    Sources:
   //    - componentInternalFunctions  (fn.functionName → fn.componentName)
   //    - fileContainers              (each contained function → container nodeId)
   //    - internalHelperComponents    (h.child → h.parent)
+  //    - internalHooks               (hookName → parent _file container)
   const childToParentMap = new Map<string, { parentId: string }>();
   for (const fn of elements.componentInternalFunctions ?? []) {
     childToParentMap.set(fn.functionName, { parentId: fn.componentName });
@@ -166,6 +180,11 @@ export function generateMerfolkMarkdown(
   }
   for (const h of elements.internalHelperComponents ?? []) {
     childToParentMap.set(h.child, { parentId: h.parent });
+  }
+  for (const [hookName, { parent }] of elements.internalHooks ?? new Map()) {
+    if (!childToParentMap.has(hookName)) {
+      childToParentMap.set(hookName, { parentId: resolveInternalHookParentId(parent) });
+    }
   }
 
   // 9. Build nodeIds: the set of all top-level node IDs that will be emitted.
