@@ -53,6 +53,7 @@ export function activate(context: ExtensionContext): void {
           storeUsageRelationships: new Map(),
           hookReturnValueRelationships: new Map(),
           moduleImportRelationships: new Map(),
+          componentPropsRelationships: new Map(),
           nextjsRouteMap: new Map(),
           apiEndpoints: new Map(),
           dbModels: new Map(),

@@ -96,6 +96,7 @@ export interface Elements {
   storeUsageRelationships: Map<string, Map<string, StoreUsageInfo>>; // component -> store -> {properties, actions}
   hookReturnValueRelationships: Map<string, HookReturnValueInfo[]>;  // component -> hook return info
   moduleImportRelationships: Map<string, Set<string>>;               // sourceFile -> Set<importedFileBasename>
+  componentPropsRelationships: Map<string, Map<string, Set<string>>>; // parentComponent -> childComponent -> Set<propNames>
   nextjsRouteMap: Map<string, NextjsRouteInfo>;
   apiEndpoints: Map<string, ApiEndpointInfo>;
   dbModels: Map<string, DbModelInfo>;
