@@ -86,6 +86,9 @@ function classifyName(
   } else {
     addToSet(name, foundItems.functions, elements.functions);
   }
+  if (fileContext.isWorker) {
+    elements.workers.push(name);
+  }
   if (filePath) addToFileContainer(filePath, name, fileContext, elements);
 }
 

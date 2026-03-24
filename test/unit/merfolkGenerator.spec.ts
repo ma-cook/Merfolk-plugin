@@ -10,6 +10,7 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     services: [],
     stores: [],
     utilities: [],
+    workers: [],
     classes: [],
     interfaces: [],
     variables: [],
@@ -614,6 +615,16 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('[Worker: dataWorker]');
   });
 
+  it('emits %% Web Workers section for worker elements', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ workers: ['myWorker'] }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Web Workers');
+    expect(result).toContain('[Worker: myWorker]');
+  });
+
   it('does not emit empty new sections', () => {
     const result = generateMerfolkMarkdown(makeElements(), 'repo', 'vanilla');
     expect(result).not.toContain('%% Classes');
@@ -625,6 +636,7 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).not.toContain('%% Error Boundaries');
     expect(result).not.toContain('%% Suspense Boundaries');
     expect(result).not.toContain('%% Worker Modules');
+    expect(result).not.toContain('%% Web Workers');
   });
 
   // --- Store Usage Relationships ---

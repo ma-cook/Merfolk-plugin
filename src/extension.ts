@@ -37,6 +37,7 @@ export function activate(context: ExtensionContext): void {
           services: [],
           stores: [],
           utilities: [],
+          workers: [],
           classes: [],
           interfaces: [],
           variables: [],

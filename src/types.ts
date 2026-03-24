@@ -78,6 +78,7 @@ export interface Elements {
   services: string[];
   stores: string[];
   utilities: string[];
+  workers: string[];
   classes: string[];
   interfaces: string[];
   variables: string[];

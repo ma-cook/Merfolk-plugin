@@ -16,6 +16,7 @@ function makeElements(): Elements {
     services: [],
     stores: [],
     utilities: [],
+    workers: [],
     classes: [],
     interfaces: [],
     variables: [],

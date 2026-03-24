@@ -593,6 +593,17 @@ export function generateMerfolkMarkdown(
     lines.push('');
   }
 
+  // %% Web Workers
+  const workers = [...new Set(elements.workers ?? [])];
+  if (workers.length > 0) {
+    lines.push('%% Web Workers');
+    for (const worker of workers) {
+      const nodeId = sanitizeNodeId(worker);
+      lines.push(`${nodeId}[Worker: ${worker}]`);
+    }
+    lines.push('');
+  }
+
   // %% Store Usage Details
   const storeUsage = elements.storeUsageRelationships ?? new Map<string, Map<string, { properties: Set<string>; actions: Set<string> }>>();
   const storeUsageLines: string[] = [];
