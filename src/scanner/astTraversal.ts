@@ -1291,8 +1291,33 @@ function parseJS(
   try {
     const ast = parse(source, {
       sourceType: 'module',
-      plugins: ['typescript', 'jsx'],
+      plugins: [
+        'jsx',
+        'typescript',
+        'decorators-legacy',
+        'classProperties',
+        'classPrivateProperties',
+        'classPrivateMethods',
+        'exportDefaultFrom',
+        'exportNamespaceFrom',
+        'dynamicImport',
+        'nullishCoalescingOperator',
+        'optionalChaining',
+        'objectRestSpread',
+        'asyncGenerators',
+        'functionBind',
+        'functionSent',
+        'numericSeparator',
+        'optionalCatchBinding',
+        'throwExpressions',
+        'topLevelAwait',
+      ],
       errorRecovery: true,
+      allowImportExportEverywhere: true,
+      allowAwaitOutsideFunction: true,
+      allowReturnOutsideFunction: true,
+      allowSuperOutsideMethod: true,
+      allowUndeclaredExports: true,
     });
     traverseVanillaAST(ast, filePath, fileContext, elements, foundItems);
   } catch {
