@@ -745,4 +745,98 @@ describe('generateMerfolkMarkdown', () => {
     );
     expect(result).not.toContain('%% Module Import Relationships');
   });
+
+  // --- Routed Connections (childToParentMap / generateRoutedConnection) ---
+
+  it('generates three-hop chain when source and target are in different containers', () => {
+    const containers = new Map();
+    containers.set('/src/services/auth.ts', {
+      type: 'Service',
+      functions: new Set(['login']),
+      nodeId: 'auth',
+      displayName: 'auth',
+      isBackend: false,
+    });
+    containers.set('/src/services/api.ts', {
+      type: 'Service',
+      functions: new Set(['fetchUser']),
+      nodeId: 'api',
+      displayName: 'api',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        rawCallSites: [{ caller: 'login', calleeName: 'fetchUser' }],
+        fileContainers: containers,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('login --> auth : "calls out"');
+    expect(result).toContain('auth --> api : "calls fetchUser"');
+    expect(result).toContain('api --> fetchUser : "receives"');
+  });
+
+  it('generates direct connection when source and target are in the same container', () => {
+    const containers = new Map();
+    containers.set('/src/utils/helpers.ts', {
+      type: 'Function',
+      functions: new Set(['helperA', 'helperB']),
+      nodeId: 'helpers',
+      displayName: 'helpers',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        rawCallSites: [{ caller: 'helperA', calleeName: 'helperB' }],
+        fileContainers: containers,
+      }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('helperA --> helperB : "calls helperB"');
+    expect(result).not.toContain('"calls out"');
+  });
+
+  it('generates two-hop chain for source-has-parent, target-is-standalone', () => {
+    const containers = new Map();
+    containers.set('/src/services/auth.ts', {
+      type: 'Service',
+      functions: new Set(['login']),
+      nodeId: 'auth',
+      displayName: 'auth',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        services: ['apiService'],
+        rawCallSites: [{ caller: 'login', calleeName: 'apiService' }],
+        fileContainers: containers,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('login --> auth : "calls out"');
+    expect(result).toContain('auth --> apiService : "calls apiService"');
+  });
+
+  it('does not generate connection when target node is unknown', () => {
+    const containers = new Map();
+    containers.set('/src/services/auth.ts', {
+      type: 'Service',
+      functions: new Set(['login']),
+      nodeId: 'auth',
+      displayName: 'auth',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        rawCallSites: [{ caller: 'login', calleeName: 'completelyUnknown' }],
+        fileContainers: containers,
+      }),
+      'repo',
+      'react'
+    );
+    expect(result).not.toContain('completelyUnknown');
+  });
 });
