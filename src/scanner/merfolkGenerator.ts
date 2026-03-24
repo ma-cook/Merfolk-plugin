@@ -24,6 +24,67 @@ function getFileStem(filePath: string): string {
   return filePath.replace(/\\/g, '/').split('/').pop()?.replace(/\.[^.]+$/, '') ?? '';
 }
 
+/**
+ * Generate routed connection lines, routing through parent containers when
+ * either the source or target is a child node inside a file container.
+ *
+ * Routing rules (mirroring Hoverchart's generateRoutedConnection logic):
+ *  - Both have parents, same parent  → direct connection
+ *  - Both have parents, diff parents → 3-hop: child→srcParent : "calls out", srcParent→tgtParent : label, tgtParent→child : "receives"
+ *  - Only source has parent          → 2-hop: child→srcParent : "calls out", srcParent→target : label
+ *  - Only target has parent          → 2-hop: source→tgtParent : label, tgtParent→child : "receives"
+ *  - Neither has parent              → direct connection
+ *
+ * Returns [] when source or target is completely unknown (not in nodeIds and
+ * not in childToParentMap).
+ */
+function generateRoutedConnection(
+  sourceNode: string,
+  targetNode: string,
+  label: string,
+  childToParentMap: Map<string, { parentId: string }>,
+  nodeIds: Set<string>,
+  filesNeedingSuffix: Set<string>
+): string[] {
+  const CALLS_OUT = 'calls out';
+  const RECEIVES = 'receives';
+
+  const resolveId = (name: string): string =>
+    filesNeedingSuffix.has(name) ? `${name}_file` : name;
+
+  const srcId = resolveId(sourceNode);
+  const tgtId = resolveId(targetNode);
+
+  // Skip if source or target is completely unknown
+  if (!nodeIds.has(srcId) && !childToParentMap.has(sourceNode)) return [];
+  if (!nodeIds.has(tgtId) && !childToParentMap.has(targetNode)) return [];
+
+  const connections: string[] = [];
+  const sourceParent = childToParentMap.get(sourceNode);
+  const targetParent = childToParentMap.get(targetNode);
+
+  if (sourceParent && targetParent) {
+    if (sourceParent.parentId === targetParent.parentId) {
+      // Same parent – direct connection between the two children
+      connections.push(`${srcId} --> ${tgtId} : "${label}"`);
+    } else {
+      // Different parents – route through both containers
+      connections.push(`${srcId} --> ${sourceParent.parentId} : "${CALLS_OUT}"`);
+      connections.push(`${sourceParent.parentId} --> ${targetParent.parentId} : "${label}"`);
+      connections.push(`${targetParent.parentId} --> ${tgtId} : "${RECEIVES}"`);
+    }
+  } else if (sourceParent && !targetParent) {
+    connections.push(`${srcId} --> ${sourceParent.parentId} : "${CALLS_OUT}"`);
+    connections.push(`${sourceParent.parentId} --> ${tgtId} : "${label}"`);
+  } else if (!sourceParent && targetParent) {
+    connections.push(`${srcId} --> ${targetParent.parentId} : "${label}"`);
+    connections.push(`${targetParent.parentId} --> ${tgtId} : "${RECEIVES}"`);
+  } else {
+    connections.push(`${srcId} --> ${tgtId} : "${label}"`);
+  }
+  return connections;
+}
+
 export function generateMerfolkMarkdown(
   elements: Elements,
   repoName: string,
@@ -77,6 +138,51 @@ export function generateMerfolkMarkdown(
       funcToContainerNodeId.set(fn, nodeId);
     }
   }
+
+  // 7. Build filesNeedingSuffix: function/utility names that collide with a
+  //    component name.  These nodes are emitted as `name_file` and must be
+  //    resolved to that ID when used in connections.
+  const filesNeedingSuffix = new Set<string>();
+  for (const fn of functions_) {
+    if (componentSet.has(fn)) filesNeedingSuffix.add(sanitizeNodeId(fn));
+  }
+  for (const util of utilities) {
+    if (componentSet.has(util)) filesNeedingSuffix.add(sanitizeNodeId(util));
+  }
+
+  // 8. Build childToParentMap: maps every child symbol to its parent container.
+  //    Sources:
+  //    - componentInternalFunctions  (fn.functionName → fn.componentName)
+  //    - fileContainers              (each contained function → container nodeId)
+  //    - internalHelperComponents    (h.child → h.parent)
+  const childToParentMap = new Map<string, { parentId: string }>();
+  for (const fn of elements.componentInternalFunctions ?? []) {
+    childToParentMap.set(fn.functionName, { parentId: fn.componentName });
+  }
+  for (const { nodeId, info } of resolvedContainers) {
+    for (const fn of info.functions) {
+      childToParentMap.set(fn, { parentId: nodeId });
+    }
+  }
+  for (const h of elements.internalHelperComponents ?? []) {
+    childToParentMap.set(h.child, { parentId: h.parent });
+  }
+
+  // 9. Build nodeIds: the set of all top-level node IDs that will be emitted.
+  //    Used by generateRoutedConnection to validate that a node exists before
+  //    wiring a connection to it.
+  const nodeIds = new Set<string>();
+  for (const comp of components) nodeIds.add(comp);
+  for (const fn of functions_) {
+    nodeIds.add(componentSet.has(fn) ? `${sanitizeNodeId(fn)}_file` : fn);
+  }
+  for (const hook of hooks) nodeIds.add(hook);
+  for (const svc of services) nodeIds.add(svc);
+  for (const store of stores) nodeIds.add(store);
+  for (const util of utilities) {
+    nodeIds.add(componentSet.has(util) ? `${sanitizeNodeId(util)}_file` : util);
+  }
+  for (const { nodeId } of resolvedContainers) nodeIds.add(nodeId);
 
   const lines: string[] = [];
 
@@ -242,21 +348,20 @@ export function generateMerfolkMarkdown(
   if (validRels.length > 0) {
     lines.push('%% Component Relationships');
     for (const rel of validRels) {
-      lines.push(`${rel.parent} --> ${rel.child} : "${rel.propsStr}"`);
+      lines.push(...generateRoutedConnection(rel.parent, rel.child, rel.propsStr, childToParentMap, nodeIds, filesNeedingSuffix));
     }
     lines.push('');
   }
 
   // %% Component Dependencies
-  // Each call site is emitted as-is (no deduplication) with a two-line chain
-  // for non-store targets: Caller --> container : label + container --> target : "receives"
+  // Use generateRoutedConnection to produce routed chains through parent
+  // containers.  Store targets have no parent so they produce a single direct
+  // connection; non-store targets route through their file container.
   const compDeps = elements.componentDependencies ?? [];
   const hookReturnValueRels = elements.hookReturnValueRelationships ?? new Map<string, { hook: string; returnValues: string[] }[]>();
   const depLines: string[] = [];
   for (const dep of compDeps) {
     if (!componentSet.has(dep.component)) continue;
-    // Resolve to file container if available
-    const resolvedTarget = funcToContainerNodeId.get(dep.target) ?? dep.target;
     // Enhance label using hookReturnValueRelationships when dep label is generic
     let label = dep.label;
     if (label === 'uses hook') {
@@ -268,11 +373,7 @@ export function generateMerfolkMarkdown(
         }
       }
     }
-    depLines.push(`${dep.component} --> ${resolvedTarget} : "${label}"`);
-    // Add "receives" line for non-store targets (two-line chain pattern)
-    if (!storeSet.has(dep.target) && !storeSet.has(resolvedTarget)) {
-      depLines.push(`${resolvedTarget} --> ${dep.target} : "receives"`);
-    }
+    depLines.push(...generateRoutedConnection(dep.component, dep.target, label, childToParentMap, nodeIds, filesNeedingSuffix));
   }
   if (depLines.length > 0) {
     lines.push('%% Component Dependencies');
@@ -281,8 +382,9 @@ export function generateMerfolkMarkdown(
   }
 
   // %% Function Call Relationships
-  // Per-call-site (NOT deduplicated) two-line chains for function calls and
-  // single-line store method calls discovered via deep body traversal.
+  // Per-call-site (NOT deduplicated).  Store method calls are emitted as a
+  // single direct line; regular function calls are routed through parent
+  // containers via generateRoutedConnection.
   const rawCallSites = elements.rawCallSites ?? [];
   const callRelLines: string[] = [];
   for (const site of rawCallSites) {
@@ -292,12 +394,8 @@ export function generateMerfolkMarkdown(
         callRelLines.push(`${site.caller} --> ${site.calleeName} : "${site.method}"`);
       }
     } else {
-      // Regular function call: two-line chain
-      const container = funcToContainerNodeId.get(site.calleeName);
-      if (container) {
-        callRelLines.push(`${site.caller} --> ${container} : "calls ${site.calleeName}"`);
-        callRelLines.push(`${container} --> ${site.calleeName} : "receives"`);
-      }
+      // Regular function call: route through parent containers
+      callRelLines.push(...generateRoutedConnection(site.caller, site.calleeName, `calls ${site.calleeName}`, childToParentMap, nodeIds, filesNeedingSuffix));
     }
   }
   if (callRelLines.length > 0) {
@@ -503,7 +601,7 @@ export function generateMerfolkMarkdown(
     for (const [store, info] of storeMap) {
       const parts = [...info.properties, ...info.actions];
       if (parts.length > 0) {
-        storeUsageLines.push(`${comp} --> ${store} : "{${parts.join(', ')}}"`);
+        storeUsageLines.push(...generateRoutedConnection(comp, store, `{${parts.join(', ')}}`, childToParentMap, nodeIds, filesNeedingSuffix));
       }
     }
   }
