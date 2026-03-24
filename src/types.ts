@@ -108,6 +108,8 @@ export interface Elements {
   errorContainment: Map<string, Set<string>>;
   sharedInterfaces: Map<string, SharedInterfaceInfo>;
   interfaceUsages: Map<string, Set<string>>;
+  internalHooks: Map<string, { parent: string; parentType: string }>;
+  filesNeedingSuffix: Set<string>;
 }
 
 // Track what's already found to avoid duplicates

@@ -38,6 +38,8 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     errorContainment: new Map(),
     sharedInterfaces: new Map(),
     interfaceUsages: new Map(),
+    internalHooks: new Map(),
+    filesNeedingSuffix: new Set(),
     ...overrides,
   };
 }
@@ -862,5 +864,56 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('%% Shaders');
     expect(result).toContain('[Shader: vertexShader]');
     expect(result).toContain('[Shader: fragmentShader]');
+  });
+
+  it('uses _file suffix for containers when name collides with a symbol', () => {
+    const containers = new Map();
+    containers.set('/src/hooks/useAuth.ts', {
+      type: 'Hook',
+      functions: new Set(['useAuth']),
+      nodeId: 'useAuth',
+      displayName: 'useAuth',
+      isBackend: false,
+    });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        hooks: ['useAuth'],
+        fileContainers: containers,
+        filesNeedingSuffix: new Set(['useAuth']),
+      }),
+      'repo',
+      'react'
+    );
+    // The hook node itself keeps its plain name
+    expect(result).toContain('useAuth[Hook: useAuth]');
+    // The file container should get _file suffix to avoid collision with the hook node
+    expect(result).toContain('useAuth_file');
+  });
+
+  it('internalHooks are added to funcToContainerNodeId mapping', () => {
+    const containers = new Map();
+    containers.set('/src/hooks/useAuth.ts', {
+      type: 'Hook',
+      functions: new Set(['useAuth']),
+      nodeId: 'useAuth',
+      displayName: 'useAuth',
+      isBackend: false,
+    });
+    const internalHooks = new Map<string, { parent: string; parentType: string }>();
+    internalHooks.set('useAuth', { parent: 'useAuth', parentType: 'hook' });
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        hooks: ['useAuth'],
+        fileContainers: containers,
+        filesNeedingSuffix: new Set(['useAuth']),
+        internalHooks,
+      }),
+      'repo',
+      'react'
+    );
+    // File container emitted with _file suffix
+    expect(result).toContain('useAuth_file');
+    // Hook node emitted normally
+    expect(result).toContain('useAuth[Hook: useAuth]');
   });
 });

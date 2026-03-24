@@ -65,6 +65,8 @@ export function activate(context: ExtensionContext): void {
           errorContainment: new Map(),
           sharedInterfaces: new Map(),
           interfaceUsages: new Map(),
+          internalHooks: new Map(),
+          filesNeedingSuffix: new Set(),
         };
 
         const foundItems: FoundItems = {

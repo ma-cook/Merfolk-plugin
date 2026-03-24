@@ -43,6 +43,8 @@ function makeElements(): Elements {
     errorContainment: new Map(),
     sharedInterfaces: new Map(),
     interfaceUsages: new Map(),
+    internalHooks: new Map(),
+    filesNeedingSuffix: new Set(),
   };
 }
 
