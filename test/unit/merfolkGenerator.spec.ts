@@ -968,4 +968,82 @@ describe('generateMerfolkMarkdown', () => {
     // Hook node emitted normally
     expect(result).toContain('useAuth[Hook: useAuth]');
   });
+
+  it('emits %% Constants section with [Constant: name] syntax', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ constants: ['API_URL', 'MAX_RETRIES'] }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Constants');
+    expect(result).toContain('API_URL[Constant: API_URL]');
+    expect(result).toContain('MAX_RETRIES[Constant: MAX_RETRIES]');
+  });
+
+  it('does not emit %% Constants section when constants is empty', () => {
+    const result = generateMerfolkMarkdown(makeElements({ constants: [] }), 'repo', 'vanilla');
+    expect(result).not.toContain('%% Constants');
+  });
+
+  it('deduplicates constants', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ constants: ['BASE_URL', 'BASE_URL'] }),
+      'repo',
+      'vanilla'
+    );
+    const matches = result.match(/BASE_URL\[Constant: BASE_URL\]/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+
+  it('emits %% Variables section with [Variable: name] syntax', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ variables: ['counter', 'isLoading'] }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Variables');
+    expect(result).toContain('counter[Variable: counter]');
+    expect(result).toContain('isLoading[Variable: isLoading]');
+  });
+
+  it('does not emit %% Variables section when variables is empty', () => {
+    const result = generateMerfolkMarkdown(makeElements({ variables: [] }), 'repo', 'vanilla');
+    expect(result).not.toContain('%% Variables');
+  });
+
+  it('deduplicates variables', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ variables: ['count', 'count'] }),
+      'repo',
+      'vanilla'
+    );
+    const matches = result.match(/count\[Variable: count\]/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+
+  it('emits %% Interfaces section with [[Interface: name]] syntax', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ interfaces: ['IUser', 'IConfig'] }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Interfaces');
+    expect(result).toContain('IUser[[Interface: IUser]]');
+    expect(result).toContain('IConfig[[Interface: IConfig]]');
+  });
+
+  it('does not emit %% Interfaces section when interfaces is empty', () => {
+    const result = generateMerfolkMarkdown(makeElements({ interfaces: [] }), 'repo', 'vanilla');
+    expect(result).not.toContain('%% Interfaces');
+  });
+
+  it('deduplicates interfaces', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ interfaces: ['IBase', 'IBase'] }),
+      'repo',
+      'vanilla'
+    );
+    const matches = result.match(/IBase\[\[Interface: IBase\]\]/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
 });
