@@ -197,6 +197,7 @@ describe('traverseVanillaAST', () => {
             type: 'ExportNamedDeclaration',
             declaration: {
               type: 'VariableDeclaration',
+              kind: 'const',
               declarations: [
                 {
                   type: 'VariableDeclarator',
@@ -212,7 +213,68 @@ describe('traverseVanillaAST', () => {
     const elements = makeElements();
     const foundItems = makeFoundItems();
     traverseVanillaAST(ast, 'lib/constants.js', makeFileContext({ isUtil: true }), elements, foundItems);
-    expect(elements.utilities).toContain('MY_CONST');
+    expect(elements.constants).toContain('MY_CONST');
+    expect(elements.utilities).not.toContain('MY_CONST');
+  });
+
+  it('classifies exported let/var declarations into elements.variables', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'VariableDeclaration',
+              kind: 'let',
+              declarations: [
+                {
+                  type: 'VariableDeclarator',
+                  id: { name: 'myVar' },
+                  init: { type: 'NumericLiteral', value: 0 },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/state.ts', makeFileContext(), elements, foundItems);
+    expect(elements.variables).toContain('myVar');
+    expect(elements.utilities).not.toContain('myVar');
+  });
+
+  it('classifies exported arrow function const as utility (not constant)', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'VariableDeclaration',
+              kind: 'const',
+              declarations: [
+                {
+                  type: 'VariableDeclarator',
+                  id: { name: 'arrowUtil' },
+                  init: { type: 'ArrowFunctionExpression' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'lib/utils.ts', makeFileContext({ isUtil: true }), elements, foundItems);
+    expect(elements.utilities).toContain('arrowUtil');
+    expect(elements.constants).not.toContain('arrowUtil');
   });
 
   it('tracks relative import relationships', () => {

@@ -66,6 +66,18 @@ function addToFileContainer(
   elements.fileContainers.get(filePath)!.functions.add(funcName);
 }
 
+/** Returns true if a variable initializer represents a function, class, or factory call
+ *  that should be classified via `classifyName` rather than as a plain constant/variable. */
+function isNonLiteralInit(initType: string | undefined): boolean {
+  return (
+    initType === 'ArrowFunctionExpression' ||
+    initType === 'FunctionExpression' ||
+    initType === 'ClassExpression' ||
+    initType === 'CallExpression' ||
+    initType === 'NewExpression'
+  );
+}
+
 function classifyName(
   name: string,
   declarationType: string,
@@ -314,14 +326,21 @@ function processVanillaNode(
       return;
     }
     if (dt === 'VariableDeclaration') {
+      const declKind = decl.kind as string | undefined;
       const decls = decl.declarations as ASTNode[] | undefined;
       if (decls) {
         for (const d of decls) {
           const name = (d.id as ASTNode | undefined)?.name as string | undefined;
           if (name) {
-            classifyName(name, 'variable', fileContext, elements, foundItems, filePath);
-            // Detect event emitter patterns: new EventEmitter()
             const init = d.init as ASTNode | undefined;
+            const initType = init?.type as string | undefined;
+            if (isNonLiteralInit(initType) || !declKind) {
+              classifyName(name, 'variable', fileContext, elements, foundItems, filePath);
+            } else if (declKind === 'const') {
+              if (!elements.constants.includes(name)) elements.constants.push(name);
+            } else {
+              if (!elements.variables.includes(name)) elements.variables.push(name);
+            }
             if (init) {
               detectEventEmitterCreation(name, init, elements);
               detectDbModelCreation(name, init, elements);
@@ -403,17 +422,28 @@ function processVanillaNode(
     return;
   }
 
-  // Top-level VariableDeclaration (not exported) — detect patterns
+  // Top-level VariableDeclaration (not exported) — detect patterns and classify
   if (type === 'VariableDeclaration') {
+    const declKind = node.kind as string | undefined;
     const decls = node.declarations as ASTNode[] | undefined;
     if (decls) {
       for (const d of decls) {
         const name = (d.id as ASTNode | undefined)?.name as string | undefined;
         const init = d.init as ASTNode | undefined;
-        if (name && init) {
-          detectEventEmitterCreation(name, init, elements);
-          detectDbModelCreation(name, init, elements);
-          detectAuthGuardPattern(name, init, elements);
+        if (name) {
+          const initType = init?.type as string | undefined;
+          if (!isNonLiteralInit(initType) && declKind) {
+            if (declKind === 'const') {
+              if (!elements.constants.includes(name)) elements.constants.push(name);
+            } else if (declKind === 'let' || declKind === 'var') {
+              if (!elements.variables.includes(name)) elements.variables.push(name);
+            }
+          }
+          if (init) {
+            detectEventEmitterCreation(name, init, elements);
+            detectDbModelCreation(name, init, elements);
+            detectAuthGuardPattern(name, init, elements);
+          }
         }
       }
     }

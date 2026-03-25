@@ -116,6 +116,8 @@ export function generateMerfolkMarkdown(
     ...services,
     ...utilities,
     ...stores,
+    ...(elements.constants ?? []),
+    ...(elements.variables ?? []),
   ]);
 
   // 5. Build filesNeedingSuffix early so computeContainerNodeId can use it.
@@ -202,6 +204,9 @@ export function generateMerfolkMarkdown(
     nodeIds.add(componentSet.has(util) ? `${sanitizeNodeId(util)}_file` : util);
   }
   for (const { nodeId } of resolvedContainers) nodeIds.add(nodeId);
+  for (const cnst of elements.constants ?? []) nodeIds.add(cnst);
+  for (const v of elements.variables ?? []) nodeIds.add(v);
+  for (const iface of elements.interfaces ?? []) nodeIds.add(iface);
 
   const lines: string[] = [];
 
@@ -456,6 +461,36 @@ export function generateMerfolkMarkdown(
     lines.push('%% Classes');
     for (const cls of classes) {
       lines.push(`${cls}[[Class: ${cls}]]`);
+    }
+    lines.push('');
+  }
+
+  // %% Constants
+  const constants = [...new Set(elements.constants ?? [])];
+  if (constants.length > 0) {
+    lines.push('%% Constants');
+    for (const cnst of constants) {
+      lines.push(`${cnst}[Constant: ${cnst}]`);
+    }
+    lines.push('');
+  }
+
+  // %% Variables
+  const variables = [...new Set(elements.variables ?? [])];
+  if (variables.length > 0) {
+    lines.push('%% Variables');
+    for (const v of variables) {
+      lines.push(`${v}[Variable: ${v}]`);
+    }
+    lines.push('');
+  }
+
+  // %% Interfaces (from elements.interfaces, for vanilla repos)
+  const interfaces = [...new Set(elements.interfaces ?? [])];
+  if (interfaces.length > 0) {
+    lines.push('%% Interfaces');
+    for (const iface of interfaces) {
+      lines.push(`${iface}[[Interface: ${iface}]]`);
     }
     lines.push('');
   }
