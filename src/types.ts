@@ -111,6 +111,7 @@ export interface Elements {
   interfaceUsages: Map<string, Set<string>>;
   internalHooks: Map<string, { parent: string; parentType: string }>;
   filesNeedingSuffix: Set<string>;
+  functionCallRelationships: Map<string, Set<{ target: string; label: string; type: string }>>;
 }
 
 // Track what's already found to avoid duplicates

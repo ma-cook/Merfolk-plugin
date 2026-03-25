@@ -46,6 +46,7 @@ function makeElements(): Elements {
     interfaceUsages: new Map(),
     internalHooks: new Map(),
     filesNeedingSuffix: new Set(),
+    functionCallRelationships: new Map(),
   };
 }
 
