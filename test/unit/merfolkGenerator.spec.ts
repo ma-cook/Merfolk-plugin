@@ -740,6 +740,24 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).not.toContain('%% Store Usage Details');
   });
 
+  it('emits store usage for non-component known nodes (utility functions)', () => {
+    const storeUsage = new Map<string, Map<string, { properties: Set<string>; actions: Set<string> }>>();
+    const innerMap = new Map<string, { properties: Set<string>; actions: Set<string> }>();
+    innerMap.set('useSettingsStore', { properties: new Set(['theme']), actions: new Set(['setTheme']) });
+    storeUsage.set('SomeUtil', innerMap);
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        utilities: ['SomeUtil'],
+        stores: ['useSettingsStore'],
+        storeUsageRelationships: storeUsage,
+      }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Store Usage Details');
+    expect(result).toContain('SomeUtil --> useSettingsStore : "{theme, setTheme}"');
+  });
+
   // --- Hook Return Value Relationships ---
 
   it('enhances component dependency label via hookReturnValueRelationships when dep label is "uses hook"', () => {

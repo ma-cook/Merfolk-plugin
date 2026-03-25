@@ -700,7 +700,9 @@ export function generateMerfolkMarkdown(
   const storeUsage = elements.storeUsageRelationships ?? new Map<string, Map<string, { properties: Set<string>; actions: Set<string> }>>();
   const storeUsageLines: string[] = [];
   for (const [comp, storeMap] of storeUsage) {
-    if (!componentSet.has(comp)) continue;
+    // Emit store usage for any known node (not just components)
+    const compId = filesNeedingSuffix.has(comp) ? `${comp}_file` : comp;
+    if (!nodeIds.has(compId) && !childToParentMap.has(comp)) continue;
     for (const [store, info] of storeMap) {
       const parts = [...info.properties, ...info.actions];
       if (parts.length > 0) {
