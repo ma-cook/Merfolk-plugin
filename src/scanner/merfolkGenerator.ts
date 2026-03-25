@@ -431,6 +431,19 @@ export function generateMerfolkMarkdown(
       callRelLines.push(...generateRoutedConnection(site.caller, site.calleeName, `calls ${site.calleeName}`, childToParentMap, nodeIds, filesNeedingSuffix));
     }
   }
+  // Non-component function-to-function call relationships
+  const funcCallRels = elements.functionCallRelationships ?? new Map();
+  for (const [caller, calls] of funcCallRels) {
+    for (const callInfo of calls) {
+      const container = funcToContainerNodeId.get(callInfo.target);
+      if (container) {
+        callRelLines.push(`${caller} --> ${container} : "calls ${callInfo.target}"`);
+        callRelLines.push(`${container} --> ${callInfo.target} : "receives"`);
+      } else {
+        callRelLines.push(`${caller} --> ${callInfo.target} : "${callInfo.label}"`);
+      }
+    }
+  }
   if (callRelLines.length > 0) {
     lines.push('%% Function Call Relationships');
     lines.push(...callRelLines);

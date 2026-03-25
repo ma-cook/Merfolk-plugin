@@ -641,6 +641,15 @@ function deepWalkForCallSites(
           !calleeName.startsWith('use')  // custom hooks already tracked in componentDependencies
         ) {
           elements.rawCallSites.push({ caller: callerName, calleeName });
+          // Also track in functionCallRelationships for non-component callers
+          if (!elements.functionCallRelationships.has(callerName)) {
+            elements.functionCallRelationships.set(callerName, new Set());
+          }
+          elements.functionCallRelationships.get(callerName)!.add({
+            target: calleeName,
+            label: `calls ${calleeName}`,
+            type: 'function',
+          });
         }
       } else if (calleeType === 'MemberExpression') {
         const obj = callee.object as ASTNode | undefined;

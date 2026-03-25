@@ -41,6 +41,7 @@ function makeElements(overrides: Partial<Elements> = {}): Elements {
     interfaceUsages: new Map(),
     internalHooks: new Map(),
     filesNeedingSuffix: new Set(),
+    functionCallRelationships: new Map(),
     ...overrides,
   };
 }
@@ -378,6 +379,35 @@ describe('generateMerfolkMarkdown', () => {
     );
     const matches = result.match(/SphereRenderer --> resourceCache : "calls getCachedShader"/g) ?? [];
     expect(matches.length).toBe(3);
+  });
+
+  it('emits function-to-function call relationships from functionCallRelationships', () => {
+    const containers = new Map();
+    containers.set('/src/services/apiService.ts', {
+      type: 'Service',
+      functions: new Set(['fetchData']),
+      nodeId: 'apiService',
+      displayName: 'apiService',
+      isBackend: false,
+    });
+
+    const funcCallRels = new Map();
+    funcCallRels.set('processData', new Set([
+      { target: 'fetchData', label: 'calls fetchData', type: 'function' },
+    ]));
+
+    const result = generateMerfolkMarkdown(
+      makeElements({
+        services: ['processData', 'fetchData'],
+        fileContainers: containers,
+        functionCallRelationships: funcCallRels,
+      }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Function Call Relationships');
+    expect(result).toContain('processData --> apiService');
+    expect(result).toContain('fetchData');
   });
 
   it('emits two-line chain for component dependencies (non-store)', () => {
