@@ -1468,6 +1468,29 @@ describe('traverseReactAST', () => {
     expect(elements.functions).toContain('processData');
   });
 
+  it('adds functions in worker files to elements.workers', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportNamedDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'computeLayout' },
+              body: { type: 'BlockStatement', body: [] },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/workers/layoutWorker.js', makeFileContext({ isWorker: true }), elements, foundItems);
+    expect(elements.workers).toContain('computeLayout');
+  });
+
   it('tracks internal helper components in same file', () => {
     const ast = {
       type: 'File',

@@ -652,7 +652,7 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('App --> LazyComponent : "suspends"');
   });
 
-  it('emits %% Worker Modules for worker file containers', () => {
+  it('skips %% Worker Modules nodes that were already emitted as file container nodes', () => {
     const containers = new Map();
     containers.set('/src/workers/dataWorker.ts', {
       type: 'Function',
@@ -666,8 +666,12 @@ describe('generateMerfolkMarkdown', () => {
       'repo',
       'vanilla'
     );
-    expect(result).toContain('%% Worker Modules');
-    expect(result).toContain('[Worker: dataWorker]');
+    // The worker was already emitted as a file container node — Worker Modules section
+    // should not re-emit it (prevents duplicate node definition).
+    expect(result).not.toContain('%% Worker Modules');
+    expect(result).not.toContain('[Worker: dataWorker]');
+    // The file container node itself should still be present.
+    expect(result).toContain('[Function: dataWorker]');
   });
 
   it('emits %% Web Workers section for worker elements', () => {
@@ -678,6 +682,29 @@ describe('generateMerfolkMarkdown', () => {
     );
     expect(result).toContain('%% Web Workers');
     expect(result).toContain('[Worker: myWorker]');
+  });
+
+  it('does not duplicate worker nodes when present in both file containers and elements.workers', () => {
+    const containers = new Map();
+    containers.set('/src/workers/dataWorker.ts', {
+      type: 'Function',
+      functions: new Set(['processData']),
+      nodeId: 'dataWorker',
+      displayName: 'dataWorker',
+      isBackend: false,
+    });
+    // dataWorker appears in both fileContainers (Worker Modules candidate) and elements.workers
+    const result = generateMerfolkMarkdown(
+      makeElements({ fileContainers: containers, workers: ['dataWorker'] }),
+      'repo',
+      'vanilla'
+    );
+    // Worker Modules and Web Workers both skip dataWorker because it was already
+    // emitted as a file container node — no duplicate [Worker: dataWorker] definition.
+    expect(result).not.toContain('[Worker: dataWorker]');
+    // The file container node should appear exactly once.
+    const fileContainerMatches = [...result.matchAll(/dataWorker\[Function: dataWorker\]/g)];
+    expect(fileContainerMatches.length).toBe(1);
   });
 
   it('does not emit empty new sections', () => {

@@ -666,23 +666,35 @@ export function generateMerfolkMarkdown(
     }
   }
   if (workerModules.length > 0) {
-    lines.push('%% Worker Modules');
+    const workerModuleLines: string[] = [];
     for (const worker of workerModules) {
       const nodeId = sanitizeNodeId(worker);
-      lines.push(`${nodeId}[Worker: ${worker}]`);
+      if (nodeIds.has(nodeId)) continue;
+      nodeIds.add(nodeId);
+      workerModuleLines.push(`${nodeId}[Worker: ${worker}]`);
     }
-    lines.push('');
+    if (workerModuleLines.length > 0) {
+      lines.push('%% Worker Modules');
+      lines.push(...workerModuleLines);
+      lines.push('');
+    }
   }
 
   // %% Web Workers
   const workers = [...new Set(elements.workers ?? [])];
   if (workers.length > 0) {
-    lines.push('%% Web Workers');
+    const webWorkerLines: string[] = [];
     for (const worker of workers) {
       const nodeId = sanitizeNodeId(worker);
-      lines.push(`${nodeId}[Worker: ${worker}]`);
+      if (nodeIds.has(nodeId)) continue;
+      nodeIds.add(nodeId);
+      webWorkerLines.push(`${nodeId}[Worker: ${worker}]`);
     }
-    lines.push('');
+    if (webWorkerLines.length > 0) {
+      lines.push('%% Web Workers');
+      lines.push(...webWorkerLines);
+      lines.push('');
+    }
   }
 
   // %% Shaders
