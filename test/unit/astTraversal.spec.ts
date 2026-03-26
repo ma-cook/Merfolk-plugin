@@ -2151,8 +2151,115 @@ describe('error boundary and suspense detection', () => {
     const elements = makeElements();
     const foundItems = makeFoundItems();
     traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
-    expect(elements.suspenseBoundaries.has('App')).toBe(true);
-    expect(elements.errorContainment.get('App')?.has('Dashboard')).toBe(true);
+    expect(elements.suspenseBoundaries.has('Suspense')).toBe(true);
+    expect(elements.errorContainment.get('Suspense')?.has('Dashboard')).toBe(true);
+  });
+
+  it('detects ErrorBoundary JSX elements and tracks contained components', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportDefaultDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'App' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ReturnStatement',
+                    argument: {
+                      type: 'JSXElement',
+                      openingElement: {
+                        name: { type: 'JSXIdentifier', name: 'ErrorBoundary' },
+                        attributes: [],
+                      },
+                      children: [
+                        {
+                          type: 'JSXElement',
+                          openingElement: {
+                            name: { type: 'JSXIdentifier', name: 'Dashboard' },
+                            attributes: [],
+                          },
+                          children: [],
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    expect(elements.errorBoundaries.has('ErrorBoundary')).toBe(true);
+    expect(elements.errorContainment.get('ErrorBoundary')?.has('Dashboard')).toBe(true);
+  });
+
+  it('detects nested Suspense and ErrorBoundary boundaries', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ExportDefaultDeclaration',
+            declaration: {
+              type: 'FunctionDeclaration',
+              id: { name: 'App' },
+              body: {
+                type: 'BlockStatement',
+                body: [
+                  {
+                    type: 'ReturnStatement',
+                    argument: {
+                      type: 'JSXElement',
+                      openingElement: {
+                        name: { type: 'JSXIdentifier', name: 'ErrorBoundary' },
+                        attributes: [],
+                      },
+                      children: [
+                        {
+                          type: 'JSXElement',
+                          openingElement: {
+                            name: { type: 'JSXIdentifier', name: 'Suspense' },
+                            attributes: [],
+                          },
+                          children: [
+                            {
+                              type: 'JSXElement',
+                              openingElement: {
+                                name: { type: 'JSXIdentifier', name: 'LazyWidget' },
+                                attributes: [],
+                              },
+                              children: [],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, 'src/components/App.jsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    expect(elements.errorBoundaries.has('ErrorBoundary')).toBe(true);
+    expect(elements.suspenseBoundaries.has('Suspense')).toBe(true);
+    expect(elements.errorContainment.get('ErrorBoundary')?.has('Suspense')).toBe(true);
+    expect(elements.errorContainment.get('Suspense')?.has('LazyWidget')).toBe(true);
   });
 });
 
