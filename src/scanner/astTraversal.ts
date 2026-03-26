@@ -729,6 +729,90 @@ function deepWalkForCallSites(
     return;
   }
 
+  // Detect store hook usage in variable declarators before generic recursion
+  if (nodeType === 'VariableDeclaration') {
+    const decls = n.declarations as ASTNode[] | undefined;
+    if (decls) {
+      for (const d of decls) {
+        const id = d.id as ASTNode | undefined;
+        const init = d.init as ASTNode | undefined;
+        if (id && init && (init.type as string) === 'CallExpression') {
+          const callee = init.callee as ASTNode | undefined;
+          const calleeType = callee?.type as string | undefined;
+
+          // Direct store hook call: const { x } = useXxxStore() or useXxxStore(state => state.x)
+          if (calleeType === 'Identifier') {
+            const calleeName = callee!.name as string | undefined;
+            if (calleeName && /Store$/.test(calleeName)) {
+              const propsToTrack: string[] = [];
+              if ((id.type as string) === 'ObjectPattern') {
+                const props = (id.properties as ASTNode[] | undefined) ?? [];
+                for (const p of props) {
+                  const key = (p.key as ASTNode)?.name as string | undefined;
+                  if (key) propsToTrack.push(key);
+                }
+              }
+              // Selector pattern: useStore(state => state.x)
+              const args = init.arguments as ASTNode[] | undefined;
+              if (args && args.length > 0) {
+                const selectorArg = args[0] as ASTNode;
+                const selectorArgType = selectorArg.type as string;
+                if (selectorArgType === 'ArrowFunctionExpression' || selectorArgType === 'FunctionExpression') {
+                  const selectorBody = selectorArg.body as ASTNode | undefined;
+                  if (selectorBody && (selectorBody.type as string) === 'MemberExpression') {
+                    const propName = (selectorBody.property as ASTNode)?.name as string | undefined;
+                    if (propName) propsToTrack.push(propName);
+                  }
+                }
+              }
+              if (propsToTrack.length > 0) {
+                if (!elements.storeUsageRelationships.has(callerName)) {
+                  elements.storeUsageRelationships.set(callerName, new Map());
+                }
+                const storeMap = elements.storeUsageRelationships.get(callerName)!;
+                if (!storeMap.has(calleeName)) {
+                  storeMap.set(calleeName, { properties: new Set(), actions: new Set() });
+                }
+                const storeInfo = storeMap.get(calleeName)!;
+                for (const prop of propsToTrack) storeInfo.properties.add(prop);
+              }
+            }
+          }
+
+          // .getState() pattern: const { x } = useXxxStore.getState()
+          if (calleeType === 'MemberExpression') {
+            const obj = callee!.object as ASTNode | undefined;
+            const prop = callee!.property as ASTNode | undefined;
+            const storeName = (obj?.type as string) === 'Identifier' ? (obj!.name as string | undefined) : undefined;
+            const methodName = prop?.name as string | undefined;
+            if (storeName && methodName === 'getState' && /Store$/.test(storeName)) {
+              if ((id.type as string) === 'ObjectPattern') {
+                const props = (id.properties as ASTNode[] | undefined) ?? [];
+                const propsArr = props
+                  .map(p => (p.key as ASTNode)?.name as string | undefined)
+                  .filter((s): s is string => typeof s === 'string');
+                if (propsArr.length > 0) {
+                  if (!elements.storeUsageRelationships.has(callerName)) {
+                    elements.storeUsageRelationships.set(callerName, new Map());
+                  }
+                  const storeMap = elements.storeUsageRelationships.get(callerName)!;
+                  if (!storeMap.has(storeName)) {
+                    storeMap.set(storeName, { properties: new Set(), actions: new Set() });
+                  }
+                  const storeInfo = storeMap.get(storeName)!;
+                  for (const p of propsArr) storeInfo.properties.add(p);
+                }
+              }
+            }
+          }
+        }
+        // Recurse into the declarator (which will recurse into init/id via childProps)
+        deepWalkForCallSites(d, callerName, elements, depth + 1);
+      }
+    }
+    return;
+  }
+
   // Recurse into child nodes
   const childProps = [
     'body', 'consequent', 'alternate', 'argument', 'expression',

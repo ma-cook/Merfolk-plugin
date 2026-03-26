@@ -627,6 +627,110 @@ describe('traverseVanillaAST', () => {
     traverseVanillaAST(ast, 'lib/dataManager.js', makeFileContext({ isUtil: true }), elements, foundItems);
     expect(elements.services).toContain('DataManager');
   });
+
+  it('populates storeUsageRelationships for vanilla function using useXxxStore.getState() destructuring', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'FunctionDeclaration',
+            id: { name: 'applyTheme' },
+            body: {
+              type: 'BlockStatement',
+              body: [
+                {
+                  type: 'VariableDeclaration',
+                  kind: 'const',
+                  declarations: [
+                    {
+                      type: 'VariableDeclarator',
+                      id: {
+                        type: 'ObjectPattern',
+                        properties: [
+                          { type: 'ObjectProperty', key: { type: 'Identifier', name: 'theme' } },
+                          { type: 'ObjectProperty', key: { type: 'Identifier', name: 'setTheme' } },
+                        ],
+                      },
+                      init: {
+                        type: 'CallExpression',
+                        callee: {
+                          type: 'MemberExpression',
+                          object: { type: 'Identifier', name: 'useSettingsStore' },
+                          property: { type: 'Identifier', name: 'getState' },
+                        },
+                        arguments: [],
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/utils/theme.ts', makeFileContext({ isUtil: true }), elements, foundItems);
+    const callerMap = elements.storeUsageRelationships.get('applyTheme');
+    expect(callerMap).toBeDefined();
+    const storeInfo = callerMap!.get('useSettingsStore');
+    expect(storeInfo).toBeDefined();
+    expect(storeInfo!.properties.has('theme')).toBe(true);
+    expect(storeInfo!.properties.has('setTheme')).toBe(true);
+  });
+
+  it('populates storeUsageRelationships for vanilla function using useXxxStore() direct call with destructuring', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'FunctionDeclaration',
+            id: { name: 'doSomething' },
+            body: {
+              type: 'BlockStatement',
+              body: [
+                {
+                  type: 'VariableDeclaration',
+                  kind: 'const',
+                  declarations: [
+                    {
+                      type: 'VariableDeclarator',
+                      id: {
+                        type: 'ObjectPattern',
+                        properties: [
+                          { type: 'ObjectProperty', key: { type: 'Identifier', name: 'objects' } },
+                          { type: 'ObjectProperty', key: { type: 'Identifier', name: 'addObject' } },
+                        ],
+                      },
+                      init: {
+                        type: 'CallExpression',
+                        callee: { type: 'Identifier', name: 'useObjectsStore' },
+                        arguments: [],
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseVanillaAST(ast, 'src/utils/objects.ts', makeFileContext({ isUtil: true }), elements, foundItems);
+    const callerMap = elements.storeUsageRelationships.get('doSomething');
+    expect(callerMap).toBeDefined();
+    const storeInfo = callerMap!.get('useObjectsStore');
+    expect(storeInfo).toBeDefined();
+    expect(storeInfo!.properties.has('objects')).toBe(true);
+    expect(storeInfo!.properties.has('addObject')).toBe(true);
+  });
 });
 
 describe('traversePythonSource', () => {
