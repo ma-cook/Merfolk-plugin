@@ -716,8 +716,8 @@ export function generateMerfolkMarkdown(
     lines.push('');
   }
 
-  // %% Module Import Relationships (vanilla repos)
-  if (repoType === 'vanilla') {
+  // %% Module Import Relationships
+  {
     const moduleImports = elements.moduleImportRelationships ?? new Map<string, Set<string>>();
     const importLines: string[] = [];
     for (const [filePath, importedFiles] of moduleImports) {
