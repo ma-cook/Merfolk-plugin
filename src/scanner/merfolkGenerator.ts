@@ -597,29 +597,66 @@ export function generateMerfolkMarkdown(
     lines.push('');
   }
 
-  // %% Event Emitters
+  // %% Events & Event Flows
   const eventEmitters = elements.eventEmitters ?? new Map();
   const eventListeners = elements.eventListeners ?? new Map();
-  if (eventEmitters.size > 0 || eventListeners.size > 0) {
-    lines.push('%% Event Emitters');
-    const allEmitterNames = new Set([...eventEmitters.keys(), ...eventListeners.keys()]);
-    for (const name of allEmitterNames) {
-      const nodeId = sanitizeNodeId(name);
-      lines.push(`${nodeId}[Emitter: ${name}]`);
-    }
-    for (const [name, events] of eventEmitters) {
-      const nodeId = sanitizeNodeId(name);
-      for (const event of events) {
-        lines.push(`${nodeId} --> ${sanitizeNodeId(event)} : "emits"`);
+
+  // Collect all unique event names from values of both maps
+  const allEventNames = new Set<string>();
+  for (const [, events] of eventEmitters) {
+    for (const evt of events) allEventNames.add(evt);
+  }
+  for (const [, events] of eventListeners) {
+    for (const evt of events) allEventNames.add(evt);
+  }
+
+  // Emitter/listener objects that have no associated events (standalone EventEmitter instances)
+  const allEmitterObjectNames = new Set([...eventEmitters.keys(), ...eventListeners.keys()]);
+  const emitterObjectsWithNoEvents = [...allEmitterObjectNames].filter(
+    name => (eventEmitters.get(name)?.size ?? 0) === 0 && (eventListeners.get(name)?.size ?? 0) === 0
+  );
+
+  if (allEventNames.size > 0 || emitterObjectsWithNoEvents.length > 0) {
+    lines.push('%% Events');
+    // Emit event nodes
+    for (const evtName of allEventNames) {
+      const nodeId = `${sanitizeNodeId(evtName)}_event`;
+      if (!nodeIds.has(nodeId)) {
+        nodeIds.add(nodeId);
+        lines.push(`${nodeId}((Service: ${evtName}))`);
       }
     }
-    for (const [name, events] of eventListeners) {
+    // Backward compatibility: emit standalone emitter objects with no events
+    for (const name of emitterObjectsWithNoEvents) {
       const nodeId = sanitizeNodeId(name);
-      for (const event of events) {
-        lines.push(`${sanitizeNodeId(event)} --> ${nodeId} : "listens"`);
+      if (!nodeIds.has(nodeId)) {
+        nodeIds.add(nodeId);
+        lines.push(`${nodeId}[Emitter: ${name}]`);
       }
     }
     lines.push('');
+
+    // Emit event flow connections
+    const flowLines: string[] = [];
+    for (const [objName, events] of eventEmitters) {
+      for (const evtName of events) {
+        const evtNodeId = `${sanitizeNodeId(evtName)}_event`;
+        const srcId = sanitizeNodeId(objName);
+        flowLines.push(`${srcId} --> ${evtNodeId} : "emits"`);
+      }
+    }
+    for (const [objName, events] of eventListeners) {
+      for (const evtName of events) {
+        const evtNodeId = `${sanitizeNodeId(evtName)}_event`;
+        const listenerId = sanitizeNodeId(objName);
+        flowLines.push(`${evtNodeId} --> ${listenerId} : "listened by"`);
+      }
+    }
+    if (flowLines.length > 0) {
+      lines.push('%% Event Flows');
+      lines.push(...flowLines);
+      lines.push('');
+    }
   }
 
   // %% Error Boundaries
