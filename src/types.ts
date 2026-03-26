@@ -278,3 +278,37 @@ export function createEmptyRelationshipMaps(): RelationshipMaps {
     nextjsRouteMap: new Map(),
   };
 }
+
+/** Canonical node in the final registry — defensive structure with all metadata */
+export interface RegistryNode {
+  id: string;              // final canonical node ID (e.g., source_file__symbolName or just symbolName)
+  label: string;           // display label for the node
+  type: string;            // node type (Component, Function, Hook, Service, Store, Utility, etc.)
+  category: 'component' | 'function' | 'hook' | 'service' | 'store' | 'utility' | 'library' | 'class' | 'interface' | 'constant' | 'variable' | 'other';
+  sourceFile?: string;     // file containing the node's definition
+  origin: string;          // where this node came from (e.g., "fileContainers", "componentRelationships", "services")
+  isChildNode?: boolean;   // true if this is a child node inside a file container
+  parentId?: string;       // if isChildNode, the parent container's ID
+  metadata?: Record<string, unknown>; // extensible metadata
+}
+
+/** Connection intent — temporary structure for raw relation during collection phase */
+export interface RelationIntent {
+  sourceSymbol: string;    // raw symbol name (not yet resolved to nodeId)
+  targetSymbol: string;    // raw symbol name
+  sourceContext?: string;  // optional context (file, component, etc.)
+  targetContext?: string;  // optional context
+  label: string;           // connection label/verb
+  type?: string;           // connection type (e.g., 'call', 'uses', 'render')
+}
+
+/** Resolved connection — edges after validation against canonical registry */
+export interface ResolvedConnection {
+  sourceId: string;        // canonical node ID
+  targetId: string;        // canonical node ID
+  label: string;           // edge label
+  isRouted?: boolean;      // true if this is a routed multi-hop connection
+}
+
+/** Canonical node registry keyed by final node ID */
+export type NodeRegistry = Map<string, RegistryNode>;

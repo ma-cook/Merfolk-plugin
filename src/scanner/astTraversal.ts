@@ -475,6 +475,21 @@ export function traverseVanillaAST(
 // React component body analysis helpers
 // ---------------------------------------------------------------------------
 
+/** Recursively unwrap React.memo() / forwardRef() wrappers to find the inner function node. */
+function unwrapToFunction(node: ASTNode): ASTNode | null {
+  const type = node.type as string;
+  if (type === 'ArrowFunctionExpression' || type === 'FunctionExpression') {
+    return node;
+  }
+  if (type === 'CallExpression') {
+    const args = node.arguments as ASTNode[] | undefined;
+    if (args && args.length > 0) {
+      return unwrapToFunction(args[0] as ASTNode);
+    }
+  }
+  return null;
+}
+
 const REACT_BUILTIN_HOOKS = new Set([
   'useState', 'useEffect', 'useRef', 'useMemo', 'useCallback',
   'useContext', 'useReducer', 'useLayoutEffect', 'useImperativeHandle',
@@ -1063,11 +1078,33 @@ function processReactDecl(
       for (const d of decls) {
         const name = (d.id as ASTNode | undefined)?.name as string | undefined;
         const init = d.init as ASTNode | undefined;
-        if (name && init?.type === 'ArrowFunctionExpression') {
+        if (!name || !init) continue;
+
+        const initType = init.type as string;
+
+        if (initType === 'ArrowFunctionExpression') {
+          // const X = () => <JSX/>
           const arrowBody = init.body as unknown;
           if (containsJSX(arrowBody, fileContext as unknown as Record<string, unknown>)) {
             addToSet(name, foundItems.components, elements.components);
             analyzeComponentBody(name, arrowBody as ASTNode, elements);
+          }
+        } else if (initType === 'FunctionExpression') {
+          // const X = function() { return <JSX/> }
+          const body = init.body as unknown;
+          if (containsJSX(body, fileContext as unknown as Record<string, unknown>)) {
+            addToSet(name, foundItems.components, elements.components);
+            analyzeComponentBody(name, body as ASTNode, elements);
+          }
+        } else if (initType === 'CallExpression') {
+          // const X = memo(() => <JSX/>), const X = forwardRef(...), const X = memo(forwardRef(...))
+          if (containsJSX(init, fileContext as unknown as Record<string, unknown>)) {
+            addToSet(name, foundItems.components, elements.components);
+            const innerFn = unwrapToFunction(init);
+            if (innerFn) {
+              const body = innerFn.body as unknown;
+              if (body) analyzeComponentBody(name, body as ASTNode, elements);
+            }
           }
         }
       }
@@ -1127,6 +1164,20 @@ function processReactDecl(
           analyzeComponentBody(name, body as ASTNode, elements);
         }
       }
+      // Handle nested wrapping: memo(forwardRef(() => <JSX/>))
+      if (fnType === 'CallExpression') {
+        if (containsJSX(fn, fileContext as unknown as Record<string, unknown>)) {
+          const innerFn = unwrapToFunction(fn);
+          if (innerFn) {
+            const innerName = (innerFn.id as ASTNode | undefined)?.name as string | undefined;
+            if (innerName) {
+              const body = innerFn.body as unknown;
+              addToSet(innerName, foundItems.components, elements.components);
+              if (body) analyzeComponentBody(innerName, body as ASTNode, elements);
+            }
+          }
+        }
+      }
     }
     return;
   }
@@ -1166,22 +1217,26 @@ export function traverseReactAST(
       continue;
     }
 
-    // Top-level VariableDeclaration: detect store creation patterns
-    if (nodeType === 'VariableDeclaration' && fileContext.isStore) {
-      const decls = node.declarations as ASTNode[] | undefined;
-      if (decls) {
-        for (const d of decls) {
-          const name = (d.id as ASTNode | undefined)?.name as string | undefined;
-          const init = d.init as ASTNode | undefined;
-          if (name && init?.type === 'CallExpression') {
-            const callee = init.callee as ASTNode | undefined;
-            const calleeName = callee?.name as string | undefined;
-            if (calleeName === 'create' || calleeName === 'createStore' || calleeName === 'defineStore') {
-              addToSet(name, foundItems.stores, elements.stores);
+    // Top-level VariableDeclaration: detect store creation patterns AND components
+    if (nodeType === 'VariableDeclaration') {
+      if (fileContext.isStore) {
+        const decls = node.declarations as ASTNode[] | undefined;
+        if (decls) {
+          for (const d of decls) {
+            const name = (d.id as ASTNode | undefined)?.name as string | undefined;
+            const init = d.init as ASTNode | undefined;
+            if (name && init?.type === 'CallExpression') {
+              const callee = init.callee as ASTNode | undefined;
+              const calleeName = callee?.name as string | undefined;
+              if (calleeName === 'create' || calleeName === 'createStore' || calleeName === 'defineStore') {
+                addToSet(name, foundItems.stores, elements.stores);
+              }
             }
           }
         }
       }
+      // Also check for component declarations (e.g. const X = memo(() => <JSX/>))
+      processReactDecl(node, fileContext, elements, foundItems);
       continue;
     }
   }

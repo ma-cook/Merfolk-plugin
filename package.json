@@ -2,7 +2,7 @@
   "name": "merfolk-plugin",
   "displayName": "Merfolk Plugin",
   "description": "Scan a VS Code workspace and generate a merfolk.md diagram",
-  "version": "0.0.1",
+  "version": "0.0.4",
   "publisher": "ma-cook",
   "repository": {
     "type": "git",

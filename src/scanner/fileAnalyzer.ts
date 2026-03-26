@@ -1,32 +1,35 @@
 import type { FileContext } from '../types';
 
 export function analyzeFile(filePath: string, repoType = 'react'): FileContext {
+  // Normalize to forward slashes so regex patterns work on Windows paths too
+  const fp = filePath.replace(/\\/g, '/');
   const isComponent =
-    /(?:^|\/)components\//.test(filePath) ||
-    filePath.endsWith('/App.jsx') ||
-    filePath === 'App.jsx';
-  const isHook = /(?:^|\/)hooks\//.test(filePath);
-  const isService = /(?:^|\/)services\//.test(filePath);
-  const isStore = /(?:^|\/)stores\//.test(filePath) || /(?:^|\/)store\//.test(filePath);
+    /(?:^|\/)components\//.test(fp) ||
+    /(?:^|\/)App\.(jsx?|tsx?)$/.test(fp) ||
+    fp === 'App.jsx' ||
+    fp === 'App.tsx';
+  const isHook = /(?:^|\/)hooks\//.test(fp);
+  const isService = /(?:^|\/)services\//.test(fp);
+  const isStore = /(?:^|\/)stores\//.test(fp) || /(?:^|\/)store\//.test(fp);
   const isUtil =
-    /(?:^|\/)utils\//.test(filePath) ||
-    /(?:^|\/)helpers\//.test(filePath) ||
-    /(?:^|\/)lib\//.test(filePath);
+    /(?:^|\/)utils\//.test(fp) ||
+    /(?:^|\/)helpers\//.test(fp) ||
+    /(?:^|\/)lib\//.test(fp);
   const isWorker =
-    /(?:^|\/)workers\//.test(filePath) || /[Ww]orker\.(js|ts|jsx|tsx)$/.test(filePath);
+    /(?:^|\/)workers\//.test(fp) || /[Ww]orker\.(js|ts|jsx|tsx)$/.test(fp);
   const isShader =
-    /(?:^|\/)shaders\//.test(filePath) ||
-    /\.(glsl|wgsl|hlsl|vert|frag|comp)$/.test(filePath);
+    /(?:^|\/)shaders\//.test(fp) ||
+    /\.(glsl|wgsl|hlsl|vert|frag|comp)$/.test(fp);
   const isBackend =
-    /(?:^|\/)functions\//.test(filePath) ||
-    /(?:^|\/)api\//.test(filePath) ||
-    /(?:^|\/)server\//.test(filePath) ||
-    /(?:^|\/)backend\//.test(filePath) ||
-    /(?:^|\/)lambda\//.test(filePath) ||
-    /(?:^|\/)routes\//.test(filePath);
+    /(?:^|\/)functions\//.test(fp) ||
+    /(?:^|\/)api\//.test(fp) ||
+    /(?:^|\/)server\//.test(fp) ||
+    /(?:^|\/)backend\//.test(fp) ||
+    /(?:^|\/)lambda\//.test(fp) ||
+    /(?:^|\/)routes\//.test(fp);
   const isNextRoute =
     repoType === 'nextjs' &&
-    /(?:^|\/)(?:app|pages)\//.test(filePath) &&
+    /(?:^|\/)(?:app|pages)\//.test(fp) &&
     !isBackend &&
     !isComponent &&
     !isHook &&
@@ -34,26 +37,26 @@ export function analyzeFile(filePath: string, repoType = 'react'): FileContext {
     !isStore &&
     !isUtil &&
     !isWorker;
-  const isModel = /(?:^|\/)models\//.test(filePath);
-  const isView = /(?:^|\/)views\//.test(filePath) || /(?:^|\/)templates\//.test(filePath);
+  const isModel = /(?:^|\/)models\//.test(fp);
+  const isView = /(?:^|\/)views\//.test(fp) || /(?:^|\/)templates\//.test(fp);
   const isController =
-    /(?:^|\/)controllers\//.test(filePath) || /(?:^|\/)handlers\//.test(filePath);
-  const isMiddleware = /(?:^|\/)middleware\//.test(filePath);
-  const isConfig = /(?:^|\/)config\//.test(filePath) || /(?:^|\/)settings\//.test(filePath);
+    /(?:^|\/)controllers\//.test(fp) || /(?:^|\/)handlers\//.test(fp);
+  const isMiddleware = /(?:^|\/)middleware\//.test(fp);
+  const isConfig = /(?:^|\/)config\//.test(fp) || /(?:^|\/)settings\//.test(fp);
   const isMigration =
-    /(?:^|\/)migrations\//.test(filePath) || /(?:^|\/)alembic\//.test(filePath);
+    /(?:^|\/)migrations\//.test(fp) || /(?:^|\/)alembic\//.test(fp);
   const isCommand =
-    /(?:^|\/)commands\//.test(filePath) || /(?:^|\/)management\//.test(filePath);
+    /(?:^|\/)commands\//.test(fp) || /(?:^|\/)management\//.test(fp);
   const isSerializer =
-    /(?:^|\/)serializers\//.test(filePath) || /(?:^|\/)schemas\//.test(filePath);
-  const isTask = /(?:^|\/)tasks\//.test(filePath) || /(?:^|\/)celery\//.test(filePath);
-  const isComposable = /(?:^|\/)composables?\//.test(filePath);
-  const isPlugin = /(?:^|\/)plugins?\//.test(filePath);
-  const isDirective = /(?:^|\/)directives?\//.test(filePath);
-  const isMixin = /(?:^|\/)mixins?\//.test(filePath);
-  const isLayout = /(?:^|\/)layouts?\//.test(filePath);
-  const isPage = /(?:^|\/)pages?\//.test(filePath) || /(?:^|\/)views?\//.test(filePath);
-  const isRouter = /(?:^|\/)router\//.test(filePath);
+    /(?:^|\/)serializers\//.test(fp) || /(?:^|\/)schemas\//.test(fp);
+  const isTask = /(?:^|\/)tasks\//.test(fp) || /(?:^|\/)celery\//.test(fp);
+  const isComposable = /(?:^|\/)composables?\//.test(fp);
+  const isPlugin = /(?:^|\/)plugins?\//.test(fp);
+  const isDirective = /(?:^|\/)directives?\//.test(fp);
+  const isMixin = /(?:^|\/)mixins?\//.test(fp);
+  const isLayout = /(?:^|\/)layouts?\//.test(fp);
+  const isPage = /(?:^|\/)pages?\//.test(fp) || /(?:^|\/)views?\//.test(fp);
+  const isRouter = /(?:^|\/)router\//.test(fp);
 
   return {
     isComponent, isHook, isService, isStore, isUtil, isWorker, isShader, isBackend, isNextRoute,
