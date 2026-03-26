@@ -809,11 +809,35 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('apiClient --> config : "imports"');
   });
 
-  it('does not emit %% Module Import Relationships for react repos', () => {
+  it('emits %% Module Import Relationships for react repos when data exists', () => {
     const moduleImports = new Map<string, Set<string>>();
     moduleImports.set('/src/utils.ts', new Set(['helpers']));
     const result = generateMerfolkMarkdown(
       makeElements({ moduleImportRelationships: moduleImports }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Module Import Relationships');
+    expect(result).toContain('utils --> helpers : "imports"');
+  });
+
+  it('emits %% Module Import Relationships with multiple imports per file', () => {
+    const moduleImports = new Map<string, Set<string>>();
+    moduleImports.set('/src/app.ts', new Set(['utils', 'helpers', 'config']));
+    const result = generateMerfolkMarkdown(
+      makeElements({ moduleImportRelationships: moduleImports }),
+      'repo',
+      'react'
+    );
+    expect(result).toContain('%% Module Import Relationships');
+    expect(result).toContain('app --> utils : "imports"');
+    expect(result).toContain('app --> helpers : "imports"');
+    expect(result).toContain('app --> config : "imports"');
+  });
+
+  it('does not emit %% Module Import Relationships when moduleImportRelationships is empty', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ moduleImportRelationships: new Map() }),
       'repo',
       'react'
     );

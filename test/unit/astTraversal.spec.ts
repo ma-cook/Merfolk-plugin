@@ -2499,4 +2499,39 @@ describe('moduleImportRelationships tracking', () => {
     expect(imports!.has('helpers')).toBe(true);
     expect(imports!.has('helpers.ts')).toBe(false);
   });
+
+  it('tracks relative imports in moduleImportRelationships via React traversal', () => {
+    const ast = {
+      type: 'File',
+      program: {
+        type: 'Program',
+        body: [
+          {
+            type: 'ImportDeclaration',
+            source: { value: './utils' },
+            specifiers: [],
+          },
+          {
+            type: 'ImportDeclaration',
+            source: { value: '../shared/helpers' },
+            specifiers: [],
+          },
+          {
+            type: 'ImportDeclaration',
+            source: { value: 'react' },
+            specifiers: [],
+          },
+        ],
+      },
+    };
+    const elements = makeElements();
+    const foundItems = makeFoundItems();
+    traverseReactAST(ast, '/src/components/App.tsx', makeFileContext({ isComponent: true }), elements, foundItems);
+    const imports = elements.moduleImportRelationships.get('/src/components/App.tsx');
+    expect(imports).toBeDefined();
+    expect(imports!.has('utils')).toBe(true);
+    expect(imports!.has('helpers')).toBe(true);
+    // Non-relative import should not be tracked
+    expect(imports!.has('react')).toBe(false);
+  });
 });
