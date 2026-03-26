@@ -207,6 +207,8 @@ export function generateMerfolkMarkdown(
   for (const cnst of elements.constants ?? []) nodeIds.add(cnst);
   for (const v of elements.variables ?? []) nodeIds.add(v);
   for (const iface of elements.interfaces ?? []) nodeIds.add(iface);
+  for (const boundary of elements.errorBoundaries ?? new Set()) nodeIds.add(boundary);
+  for (const boundary of elements.suspenseBoundaries ?? new Set()) nodeIds.add(boundary);
 
   const lines: string[] = [];
 

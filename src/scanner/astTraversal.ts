@@ -551,12 +551,22 @@ function walkNodeForJSX(
     if (childName && /^[A-Z]/.test(childName)) {
       // Detect Suspense boundaries
       if (childName === 'Suspense') {
-        elements.suspenseBoundaries.add(parentComponent);
-        // Track containment: children inside Suspense belong to this component
+        elements.suspenseBoundaries.add(childName);
+        // Track containment: children inside Suspense boundary
         const children = n.children as unknown[] | undefined;
         if (children) {
           for (const c of children) {
-            collectContainedComponents(c, parentComponent, elements.errorContainment, 'suspense');
+            collectContainedComponents(c, childName, elements.errorContainment, 'suspense');
+          }
+        }
+      } else if (childName === 'ErrorBoundary' || childName.includes('ErrorBoundary')) {
+        // Detect ErrorBoundary JSX elements
+        elements.errorBoundaries.add(childName);
+        // Track containment: children inside ErrorBoundary
+        const children = n.children as unknown[] | undefined;
+        if (children) {
+          for (const c of children) {
+            collectContainedComponents(c, childName, elements.errorContainment, 'error');
           }
         }
       }

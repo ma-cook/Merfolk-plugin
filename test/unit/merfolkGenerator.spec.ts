@@ -638,18 +638,28 @@ describe('generateMerfolkMarkdown', () => {
 
   it('emits %% Suspense Boundaries section', () => {
     const errorContainment = new Map<string, Set<string>>();
-    errorContainment.set('App', new Set(['LazyComponent']));
+    errorContainment.set('Suspense', new Set(['LazyComponent']));
     const result = generateMerfolkMarkdown(
       makeElements({
-        suspenseBoundaries: new Set(['App']),
+        suspenseBoundaries: new Set(['Suspense']),
         errorContainment,
       }),
       'repo',
       'react'
     );
     expect(result).toContain('%% Suspense Boundaries');
-    expect(result).toContain('[/Suspense: App/]');
-    expect(result).toContain('App --> LazyComponent : "suspends"');
+    expect(result).toContain('[/Suspense: Suspense/]');
+    expect(result).toContain('Suspense --> LazyComponent : "suspends"');
+  });
+
+  it('skips %% Error Boundaries and %% Suspense Boundaries sections when empty', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ errorBoundaries: new Set(), suspenseBoundaries: new Set() }),
+      'repo',
+      'react'
+    );
+    expect(result).not.toContain('%% Error Boundaries');
+    expect(result).not.toContain('%% Suspense Boundaries');
   });
 
   it('skips %% Worker Modules nodes that were already emitted as file container nodes', () => {
