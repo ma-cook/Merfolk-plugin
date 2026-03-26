@@ -604,20 +604,59 @@ describe('generateMerfolkMarkdown', () => {
     expect(result).toContain('login --> dashboard : "redirect"');
   });
 
-  it('emits %% Event Emitters section', () => {
+  it('emits %% Events section with _event suffix nodes', () => {
     const eventEmitters = new Map<string, Set<string>>();
     eventEmitters.set('bus', new Set(['userUpdated']));
     const eventListeners = new Map<string, Set<string>>();
-    eventListeners.set('bus', new Set(['userUpdated']));
+    eventListeners.set('handler', new Set(['userUpdated']));
     const result = generateMerfolkMarkdown(
       makeElements({ eventEmitters, eventListeners }),
       'repo',
       'vanilla'
     );
-    expect(result).toContain('%% Event Emitters');
-    expect(result).toContain('[Emitter: bus]');
-    expect(result).toContain('"emits"');
-    expect(result).toContain('"listens"');
+    expect(result).toContain('%% Events');
+    expect(result).toContain('userUpdated_event((Service: userUpdated))');
+    expect(result).not.toContain('%% Event Emitters');
+    expect(result).not.toContain('[Emitter: bus]');
+  });
+
+  it('emits %% Event Flows with "emits" and "listened by" labels', () => {
+    const eventEmitters = new Map<string, Set<string>>();
+    eventEmitters.set('myEmitter', new Set(['dataReady']));
+    const eventListeners = new Map<string, Set<string>>();
+    eventListeners.set('myListener', new Set(['dataReady']));
+    const result = generateMerfolkMarkdown(
+      makeElements({ eventEmitters, eventListeners }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Event Flows');
+    expect(result).toContain('myEmitter --> dataReady_event : "emits"');
+    expect(result).toContain('dataReady_event --> myListener : "listened by"');
+    expect(result).not.toContain('"listens"');
+  });
+
+  it('emits standalone emitter node for objects with no events', () => {
+    const eventEmitters = new Map<string, Set<string>>();
+    eventEmitters.set('orphanEmitter', new Set());
+    const result = generateMerfolkMarkdown(
+      makeElements({ eventEmitters }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).toContain('%% Events');
+    expect(result).toContain('[Emitter: orphanEmitter]');
+  });
+
+  it('emits no event section for empty event maps', () => {
+    const result = generateMerfolkMarkdown(
+      makeElements({ eventEmitters: new Map(), eventListeners: new Map() }),
+      'repo',
+      'vanilla'
+    );
+    expect(result).not.toContain('%% Events');
+    expect(result).not.toContain('%% Event Flows');
+    expect(result).not.toContain('%% Event Emitters');
   });
 
   it('emits %% Error Boundaries section', () => {
