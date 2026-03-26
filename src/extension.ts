@@ -84,8 +84,25 @@ export function activate(context: ExtensionContext): void {
           const fileContext = analyzeFile(file.path, repoType);
           try {
             if (file.type === 'shader') {
-              const source = fs.readFileSync(file.path, 'utf-8');
-              extractShaderSymbols(source, file.path, fileContext, elements, foundItems);
+              // Match hoverchart: treat shader files as whole-file utility nodes (no internal symbol extraction)
+              const shaderFileName = path.basename(file.path); // e.g. "line.frag.glsl"
+              const shaderNodeName = shaderFileName.replace(/\./g, '_'); // e.g. "line_frag_glsl"
+              if (!foundItems.utilities.has(shaderNodeName)) {
+                foundItems.utilities.add(shaderNodeName);
+                elements.utilities.push(shaderNodeName);
+              }
+              // Group under a "shaders" file container
+              const shaderContainerName = 'shaders';
+              if (!elements.fileContainers.has(shaderContainerName)) {
+                elements.fileContainers.set(shaderContainerName, {
+                  type: 'utility',
+                  functions: new Set(),
+                  nodeId: shaderContainerName,
+                  displayName: shaderContainerName,
+                  isBackend: false,
+                });
+              }
+              elements.fileContainers.get(shaderContainerName)!.functions.add(shaderNodeName);
             } else if (file.type === 'python') {
               const source = fs.readFileSync(file.path, 'utf-8');
               traversePythonSource(source, file.path, fileContext, elements, foundItems);

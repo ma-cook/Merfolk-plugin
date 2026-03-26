@@ -566,9 +566,26 @@ export function generateMerfolkMarkdown(
 
   // ── Component Dependencies (hooks/services/stores/utilities) ──────────────
   const componentDependencies = elements.componentDependencies ?? [];
+  // Filter dependencies to only include targets that exist as nodes
+  const hooksSet = new Set(elements.hooks ?? []);
+  const servicesSetForFilter = new Set(elements.services ?? []);
+  const storesSetForDep = new Set(elements.stores ?? []);
+  const utilitiesSetForFilter = new Set(elements.utilities ?? []);
+  const filteredDeps = componentDependencies.filter((dep: any) => {
+    const target = dep.target || dep.targetNodeId;
+    if (!target) return false;
+    // Check if target is a known node OR is in childToParentMap
+    if (nodeIds.has(target) || childToParentMap.has(target)) return true;
+    // Check by type
+    if (dep.label?.includes('hook')) return hooksSet.has(target);
+    if (dep.label?.includes('store')) return storesSetForDep.has(target);
+    if (dep.label?.includes('service')) return servicesSetForFilter.has(target);
+    if (dep.label?.includes('utility')) return utilitiesSetForFilter.has(target);
+    return false;
+  });
   // Group by component and deduplicate
   const compDepMap = new Map<string, Set<{ target: string; label: string; type?: string }>>();
-  for (const dep of componentDependencies) {
+  for (const dep of filteredDeps) {
     if (!compDepMap.has(dep.component)) compDepMap.set(dep.component, new Set());
     compDepMap.get(dep.component)!.add(dep);
   }

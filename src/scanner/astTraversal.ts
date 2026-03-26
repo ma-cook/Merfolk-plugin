@@ -1,5 +1,6 @@
 import type { Elements, FoundItems, FileContext, ComponentInternalFunction, ApiEndpointInfo, DbModelInfo } from '../types';
 import { containsJSX } from './fileAnalyzer';
+import { sanitizeNodeId } from '../utils';
 import { parse } from '@babel/parser';
 
 type ASTNode = Record<string, unknown>;
@@ -8,10 +9,11 @@ type ASTNode = Record<string, unknown>;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Extract the filename stem (no directory, no extension) from a file path. */
+/** Extract the filename stem (no directory, no extension) from a file path, sanitized for node IDs. */
 function getFileStem(filePath: string | undefined): string {
   if (!filePath) return '';
-  return filePath.replace(/\\/g, '/').split('/').pop()?.replace(/\.[^.]+$/, '') ?? '';
+  const raw = filePath.replace(/\\/g, '/').split('/').pop()?.replace(/\.[^.]+$/, '') ?? '';
+  return raw ? sanitizeNodeId(raw) : '';
 }
 
 function addToSet(
@@ -35,23 +37,26 @@ function addToFileContainer(
   if (fileContext.isComponent) return;
 
   const base = filePath.replace(/\\/g, '/').split('/').pop() ?? '';
-  const stem = base.replace(/\.[^.]+$/, '');
-  if (!stem) return;
+  const rawStem = base.replace(/\.[^.]+$/, '');
+  if (!rawStem) return;
+  const stem = sanitizeNodeId(rawStem);
 
   let containerType: string;
   let isBackend = false;
 
   if (fileContext.isHook || fileContext.isComposable) {
-    containerType = 'Hook';
+    containerType = 'hook';
   } else if (fileContext.isBackend) {
-    containerType = 'Service';
+    containerType = 'service';
     isBackend = true;
   } else if (fileContext.isService || fileContext.isModel) {
-    containerType = 'Service';
+    containerType = 'service';
   } else if (fileContext.isStore) {
-    containerType = 'Store';
+    containerType = 'store';
+  } else if (fileContext.isWorker) {
+    containerType = 'worker';
   } else {
-    containerType = 'Function';
+    containerType = 'utility';
   }
 
   if (!elements.fileContainers.has(filePath)) {
@@ -96,11 +101,17 @@ function classifyName(
   if (fileContext.isService || fileContext.isModel) {
     addToSet(name, foundItems.services, elements.services);
   } else if (fileContext.isStore) {
-    addToSet(name, foundItems.stores, elements.stores);
+    // Store files: all exported functions go to utilities (actual stores detected via create() calls)
+    addToSet(name, foundItems.utilities, elements.utilities);
   } else if (fileContext.isUtil) {
     addToSet(name, foundItems.utilities, elements.utilities);
   } else if (fileContext.isHook || fileContext.isComposable) {
-    addToSet(name, foundItems.hooks, elements.hooks);
+    // Hook files: only use-prefixed names are hooks; others are utilities
+    if (name.startsWith('use')) {
+      addToSet(name, foundItems.hooks, elements.hooks);
+    } else {
+      addToSet(name, foundItems.utilities, elements.utilities);
+    }
   } else {
     addToSet(name, foundItems.functions, elements.functions);
   }
@@ -450,6 +461,561 @@ function processVanillaNode(
     return;
   }
   // ExportAllDeclaration, etc. — no-op
+}
+
+// ---------------------------------------------------------------------------
+// AST metadata keys to skip during recursive walk
+// ---------------------------------------------------------------------------
+const AST_SKIP_KEYS = new Set([
+  'type', 'start', 'end', 'loc', 'range',
+  'leadingComments', 'trailingComments', 'innerComments',
+  'extra', 'comments', 'tokens',
+]);
+
+// ---------------------------------------------------------------------------
+// Additional detector helpers (matching hoverchart patterns)
+// ---------------------------------------------------------------------------
+
+/** Detect Firestore collection(db, 'name') or doc(db, 'name', id) calls. */
+function detectFirestoreModel(expr: ASTNode, elements: Elements): void {
+  if (expr.type !== 'CallExpression') return;
+  const callee = expr.callee as ASTNode | undefined;
+  const funcName = (callee?.type === 'Identifier') ? callee.name as string | undefined : undefined;
+  if (funcName !== 'collection' && funcName !== 'doc') return;
+  const args = expr.arguments as ASTNode[] | undefined;
+  if (!args || args.length < 2) return;
+  const collArg = args[1];
+  if (collArg?.type === 'StringLiteral' || (collArg as ASTNode)?.value !== undefined) {
+    const collName = sanitizeNodeId(String((collArg as ASTNode).value));
+    if (collName && !elements.dbModels.has(collName)) {
+      elements.dbModels.set(collName, { fields: [], type: 'mongoose' });
+    }
+  }
+}
+
+/** Detect mongoose.model('Name', schema) calls. */
+function detectMongooseModelCall(expr: ASTNode, elements: Elements): void {
+  if (expr.type !== 'CallExpression') return;
+  const callee = expr.callee as ASTNode | undefined;
+  if (callee?.type !== 'MemberExpression') return;
+  const method = (callee.property as ASTNode)?.name as string | undefined;
+  if (method !== 'model') return;
+  const args = expr.arguments as ASTNode[] | undefined;
+  if (!args || args.length < 1) return;
+  const nameArg = args[0];
+  if (nameArg?.type === 'StringLiteral' || (nameArg as ASTNode)?.value !== undefined) {
+    const modelName = sanitizeNodeId(String((nameArg as ASTNode).value).toLowerCase());
+    if (modelName && !elements.dbModels.has(modelName)) {
+      elements.dbModels.set(modelName, { fields: [], type: 'mongoose' });
+    }
+  }
+}
+
+/** Detect Prisma: prisma.collectionName.method() */
+function detectPrismaModelCall(expr: ASTNode, elements: Elements): void {
+  if (expr.type !== 'CallExpression') return;
+  const callee = expr.callee as ASTNode | undefined;
+  if (callee?.type !== 'MemberExpression') return;
+  const obj = callee.object as ASTNode | undefined;
+  if (obj?.type !== 'MemberExpression') return;
+  const prismaObj = obj.object as ASTNode | undefined;
+  if (prismaObj?.name !== 'prisma') return;
+  const modelName = sanitizeNodeId((obj.property as ASTNode)?.name as string || '');
+  if (modelName && !elements.dbModels.has(modelName)) {
+    elements.dbModels.set(modelName, { fields: [], type: 'prisma' });
+  }
+}
+
+/** Detect Sequelize relationship: User.hasMany(Post), Post.belongsTo(User) */
+function detectSequelizeRelationship(expr: ASTNode, elements: Elements): void {
+  if (expr.type !== 'CallExpression') return;
+  const callee = expr.callee as ASTNode | undefined;
+  if (callee?.type !== 'MemberExpression') return;
+  const rMethods = new Set(['hasMany', 'hasOne', 'belongsTo', 'belongsToMany']);
+  const method = (callee.property as ASTNode)?.name as string | undefined;
+  if (!method || !rMethods.has(method)) return;
+  const parentModel = sanitizeNodeId((callee.object as ASTNode)?.name as string || '').toLowerCase();
+  const args = expr.arguments as ASTNode[] | undefined;
+  const childArg = args?.[0];
+  const childModel = sanitizeNodeId(
+    (childArg?.type === 'Identifier') ? (childArg.name as string || '').toLowerCase() : ''
+  );
+  if (parentModel && childModel) {
+    if (!elements.dbModels.has(parentModel)) elements.dbModels.set(parentModel, { fields: [], type: 'sequelize' });
+    // Track relationship (store child model name in fields for simplicity)
+  }
+}
+
+/** Detect Firebase auth calls: signInWithPopup, onAuthStateChanged, signOut */
+function detectFirebaseAuthCall(
+  expr: ASTNode,
+  currentComponent: string | null,
+  fileStem: string,
+  elements: Elements
+): void {
+  if (expr.type !== 'CallExpression') return;
+  const callee = expr.callee as ASTNode | undefined;
+  const funcName = (callee?.type === 'Identifier') ? callee.name as string | undefined : undefined;
+  if (!funcName) return;
+  const authFuncs = new Set(['onAuthStateChanged', 'signInWithPopup', 'signOut',
+    'signInWithEmailAndPassword', 'createUserWithEmailAndPassword', 'signInWithRedirect']);
+  if (authFuncs.has(funcName)) {
+    elements.authGuards.add(funcName);
+    if (currentComponent) {
+      elements.authFlows.push({ source: currentComponent, target: funcName, type: 'auth check' });
+    }
+  }
+}
+
+/** Detect Firebase realtime listener calls: onSnapshot, onValue */
+function detectFirebaseRealtimeListener(
+  expr: ASTNode,
+  currentComponent: string | null,
+  fileStem: string,
+  elements: Elements
+): void {
+  if (expr.type !== 'CallExpression') return;
+  const callee = expr.callee as ASTNode | undefined;
+  const funcName = (callee?.type === 'Identifier') ? callee.name as string | undefined : undefined;
+  if (funcName === 'onSnapshot' || funcName === 'onValue') {
+    const evtName = sanitizeNodeId(funcName);
+    if (!elements.eventListeners.has(evtName)) elements.eventListeners.set(evtName, new Set());
+    elements.eventListeners.get(evtName)!.add(currentComponent || fileStem);
+  }
+}
+
+/** Detect dispatchEvent(new CustomEvent('name')) */
+function detectDispatchEventCall(
+  expr: ASTNode,
+  currentComponent: string | null,
+  fileStem: string,
+  elements: Elements
+): void {
+  if (expr.type !== 'CallExpression') return;
+  const callee = expr.callee as ASTNode | undefined;
+  if (callee?.type !== 'Identifier' || callee.name !== 'dispatchEvent') return;
+  const args = expr.arguments as ASTNode[] | undefined;
+  const arg = args?.[0];
+  if (arg?.type === 'NewExpression') {
+    const argCallee = arg.callee as ASTNode | undefined;
+    if (argCallee?.name === 'CustomEvent') {
+      const innerArgs = arg.arguments as ASTNode[] | undefined;
+      if (innerArgs?.[0]?.type === 'StringLiteral' || innerArgs?.[0]?.value !== undefined) {
+        const evtName = sanitizeNodeId(String((innerArgs![0] as ASTNode).value));
+        if (evtName) {
+          if (!elements.eventEmitters.has(evtName)) elements.eventEmitters.set(evtName, new Set());
+          elements.eventEmitters.get(evtName)!.add(currentComponent || fileStem);
+        }
+      }
+    }
+  }
+}
+
+/** Detect postMessage({ type: 'xyz' }) */
+function detectPostMessageCall(
+  expr: ASTNode,
+  currentComponent: string | null,
+  fileStem: string,
+  elements: Elements
+): void {
+  if (expr.type !== 'CallExpression') return;
+  const callee = expr.callee as ASTNode | undefined;
+  if (callee?.type !== 'MemberExpression') return;
+  const method = (callee.property as ASTNode)?.name as string | undefined;
+  if (method !== 'postMessage') return;
+  const args = expr.arguments as ASTNode[] | undefined;
+  const arg = args?.[0];
+  if (arg?.type === 'ObjectExpression') {
+    const props = arg.properties as ASTNode[] | undefined;
+    const typeProp = props?.find(p => ((p.key as ASTNode)?.name as string) === 'type');
+    if (typeProp) {
+      const val = (typeProp as ASTNode).value as ASTNode | undefined;
+      if (val?.type === 'StringLiteral' || val?.value !== undefined) {
+        const evtName = sanitizeNodeId(String(val!.value));
+        if (evtName) {
+          if (!elements.eventEmitters.has(evtName)) elements.eventEmitters.set(evtName, new Set());
+          elements.eventEmitters.get(evtName)!.add(currentComponent || fileStem);
+        }
+      }
+    }
+  }
+}
+
+/** Detect emit('event'), addEventListener('event'), on('event') (for React deep walk) */
+function detectEventPatternInReact(
+  expr: ASTNode,
+  currentComponent: string | null,
+  fileStem: string,
+  elements: Elements
+): void {
+  if (expr.type !== 'CallExpression') return;
+  const callee = expr.callee as ASTNode | undefined;
+  if (callee?.type !== 'MemberExpression') return;
+  const method = (callee.property as ASTNode)?.name as string | undefined;
+  if (!method) return;
+
+  const args = expr.arguments as ASTNode[] | undefined;
+  const eventArg = args?.[0];
+  const eventName = (eventArg?.type === 'StringLiteral' || eventArg?.value !== undefined)
+    ? sanitizeNodeId(String((eventArg as ASTNode).value))
+    : undefined;
+  if (!eventName) return;
+
+  const source = currentComponent || fileStem;
+
+  if (method === 'emit') {
+    if (!elements.eventEmitters.has(eventName)) elements.eventEmitters.set(eventName, new Set());
+    elements.eventEmitters.get(eventName)!.add(source);
+  } else if (method === 'on' || method === 'addEventListener' || method === 'addListener') {
+    if (!elements.eventListeners.has(eventName)) elements.eventListeners.set(eventName, new Set());
+    elements.eventListeners.get(eventName)!.add(source);
+  }
+}
+
+/** Check if params look like Express middleware (req, res, next) */
+function isMiddlewareParams(params: ASTNode[]): boolean {
+  if (!params || params.length !== 3) return false;
+  const names = params.map(p => {
+    const n = (p.name as string | undefined) || ((p as ASTNode).left as ASTNode | undefined)?.name as string | undefined || '';
+    return n.toLowerCase();
+  });
+  return (names[0].startsWith('req') || names[0] === 'request' || names[0] === 'ctx') &&
+    (names[1].startsWith('res') || names[1] === 'response' || names[1] === 'context') &&
+    (names[2] === 'next' || names[2] === 'done');
+}
+
+// ---------------------------------------------------------------------------
+// Deep React tree walk — matches hoverchart's full recursive traverse()
+// Captures patterns missed by top-level passes:
+//  - Non-exported function/variable declarations at any depth
+//  - API endpoints, DB models, auth guards, events, boundaries
+// ---------------------------------------------------------------------------
+
+function deepReactWalk(
+  node: unknown,
+  filePath: string,
+  fileStem: string,
+  fileContext: FileContext,
+  elements: Elements,
+  foundItems: FoundItems,
+  currentComponent: string | null,
+  parentIsComponent: boolean,
+  fileImports: { stores: string[]; services: string[]; hooks: string[]; utilities: string[] },
+  depth: number
+): void {
+  if (!node || typeof node !== 'object' || depth > 40) return;
+  const n = node as ASTNode;
+  const nodeType = n.type as string;
+  if (!nodeType) return;
+
+  let nextComponent = currentComponent;
+  let nextParentIsComponent = parentIsComponent;
+
+  // ── FunctionDeclaration ────────────────────────────────────────────
+  if (nodeType === 'FunctionDeclaration') {
+    const funcName = (n.id as ASTNode | undefined)?.name as string | undefined;
+    if (funcName) {
+      // Check if already captured
+      const alreadyCaptured =
+        foundItems.components.has(funcName) ||
+        foundItems.functions.has(funcName) ||
+        foundItems.hooks.has(funcName) ||
+        foundItems.services.has(funcName) ||
+        foundItems.stores.has(funcName) ||
+        foundItems.utilities.has(funcName);
+
+      if (foundItems.components.has(funcName)) {
+        // Entering a known component's body
+        nextComponent = funcName;
+        nextParentIsComponent = true;
+      } else if (parentIsComponent && currentComponent && !alreadyCaptured) {
+        // Inside a component body — component-internal function
+        const isEventHandler = /^(handle|on)[A-Z]/.test(funcName);
+        const isTrivial = funcName.length <= 2;
+        if (!isEventHandler && !isTrivial && !funcName.startsWith('use')) {
+          const prefixed = currentComponent.toLowerCase() +
+            funcName.charAt(0).toUpperCase() + funcName.slice(1);
+          const alreadyTracked = elements.componentInternalFunctions.some(
+            f => f.functionName === prefixed
+          );
+          if (!alreadyTracked) {
+            elements.componentInternalFunctions.push({
+              componentName: currentComponent,
+              functionName: prefixed,
+              label: getInternalFunctionLabel(funcName, 'function'),
+            });
+          }
+        }
+      } else if (!alreadyCaptured && !parentIsComponent) {
+        // Not a component, not inside a component — classify by file context
+        classifyName(funcName, 'FunctionDeclaration', fileContext, elements, foundItems, filePath);
+      }
+
+      // Auth guard detection (middleware-like function)
+      const params = n.params as ASTNode[] | undefined;
+      if (params && isMiddlewareParams(params)) {
+        if (/auth|guard|require|protect/i.test(funcName)) {
+          elements.authGuards.add(funcName);
+          if (currentComponent) {
+            elements.authFlows.push({ source: currentComponent, target: funcName, type: 'uses guard' });
+          }
+        }
+      }
+    }
+  }
+
+  // ── VariableDeclaration ────────────────────────────────────────────
+  if (nodeType === 'VariableDeclaration') {
+    const decls = n.declarations as ASTNode[] | undefined;
+    if (decls) {
+      for (const decl of decls) {
+        const id = decl.id as ASTNode | undefined;
+        const name = id?.name as string | undefined;
+        const init = decl.init as ASTNode | undefined;
+        if (!name) continue;
+
+        if (init) {
+          const initType = init.type as string;
+
+          // Check if this is a function-like variable
+          let isFunction = false;
+          if (initType === 'ArrowFunctionExpression' || initType === 'FunctionExpression') {
+            isFunction = true;
+          } else if (initType === 'CallExpression') {
+            const callee = init.callee as ASTNode | undefined;
+            const calleeName = callee?.name as string | undefined;
+            if (calleeName === 'useCallback' || calleeName === 'useMemo' ||
+                calleeName === 'forwardRef' || calleeName === 'memo') {
+              const args = init.arguments as ASTNode[] | undefined;
+              if (args && args[0]) {
+                const firstT = (args[0] as ASTNode).type as string;
+                if (firstT === 'ArrowFunctionExpression' || firstT === 'FunctionExpression') {
+                  isFunction = true;
+                }
+              }
+            }
+            // React.memo, React.forwardRef
+            if (callee?.type === 'MemberExpression') {
+              const objName = (callee.object as ASTNode)?.name as string | undefined;
+              const propName = (callee.property as ASTNode)?.name as string | undefined;
+              if (objName === 'React' && (propName === 'memo' || propName === 'forwardRef')) {
+                isFunction = true;
+              }
+            }
+          }
+
+          // Check if already captured
+          const alreadyCaptured =
+            foundItems.components.has(name) ||
+            foundItems.functions.has(name) ||
+            foundItems.hooks.has(name) ||
+            foundItems.services.has(name) ||
+            foundItems.stores.has(name) ||
+            foundItems.utilities.has(name);
+
+          if (isFunction) {
+            if (foundItems.components.has(name)) {
+              nextComponent = name;
+              nextParentIsComponent = true;
+            } else if (parentIsComponent && currentComponent && !alreadyCaptured) {
+              // Component-internal function
+              const isEventHandler = /^(handle|on)[A-Z]/.test(name);
+              const isTrivial = name.length <= 2;
+              if (!isEventHandler && !isTrivial && !name.startsWith('use')) {
+                const prefixed = currentComponent.toLowerCase() +
+                  name.charAt(0).toUpperCase() + name.slice(1);
+                const alreadyTracked = elements.componentInternalFunctions.some(
+                  f => f.functionName === prefixed
+                );
+                if (!alreadyTracked) {
+                  elements.componentInternalFunctions.push({
+                    componentName: currentComponent,
+                    functionName: prefixed,
+                    label: getInternalFunctionLabel(name, 'function'),
+                  });
+                }
+              }
+            } else if (!alreadyCaptured && !parentIsComponent) {
+              classifyName(name, 'variable', fileContext, elements, foundItems, filePath);
+            }
+          }
+
+          // NewExpression: const x = new ClassName()
+          if (initType === 'NewExpression' && !alreadyCaptured && !parentIsComponent) {
+            if (fileContext.isBackend || fileContext.isService) {
+              addToSet(name, foundItems.services, elements.services);
+              addToFileContainer(filePath, name, fileContext, elements);
+            } else if (fileContext.isUtil) {
+              addToSet(name, foundItems.utilities, elements.utilities);
+              addToFileContainer(filePath, name, fileContext, elements);
+            }
+          }
+
+          // Store creation (zustand create/createWithEqualityFn/createStore)
+          if (initType === 'CallExpression' && fileContext.isStore) {
+            const callee = init.callee as ASTNode | undefined;
+            const calleeName = callee?.name as string | undefined;
+            if (calleeName === 'create' || calleeName === 'createWithEqualityFn' ||
+                calleeName === 'createStore' || calleeName === 'defineStore') {
+              addToSet(name, foundItems.stores, elements.stores);
+            }
+          }
+
+          // Auth guard as variable
+          if (isFunction) {
+            const funcBody = (initType === 'ArrowFunctionExpression' || initType === 'FunctionExpression')
+              ? init : ((init.arguments as ASTNode[] | undefined)?.[0] as ASTNode | undefined);
+            const funcParams = funcBody?.params as ASTNode[] | undefined;
+            if (funcParams && isMiddlewareParams(funcParams)) {
+              if (/auth|guard|require|protect|middleware/i.test(name)) {
+                elements.authGuards.add(name);
+              }
+            }
+            if (name.startsWith('with') && /auth/i.test(name)) {
+              elements.authGuards.add(name);
+            }
+          }
+
+          // Pattern detectors on init
+          detectEventEmitterCreation(name, init, elements);
+          detectDbModelCreation(name, init, elements);
+          detectAuthGuardPattern(name, init, elements);
+        }
+      }
+    }
+  }
+
+  // ── CallExpression ─────────────────────────────────────────────────
+  if (nodeType === 'CallExpression') {
+    // API endpoints (Express/Fastify)
+    detectApiEndpointRegistration(n, elements);
+    // DB models
+    detectFirestoreModel(n, elements);
+    detectMongooseModelCall(n, elements);
+    detectPrismaModelCall(n, elements);
+    detectSequelizeRelationship(n, elements);
+    // Firebase auth
+    detectFirebaseAuthCall(n, currentComponent, fileStem, elements);
+    // Firebase realtime listeners
+    detectFirebaseRealtimeListener(n, currentComponent, fileStem, elements);
+    // dispatchEvent
+    detectDispatchEventCall(n, currentComponent, fileStem, elements);
+    // postMessage
+    detectPostMessageCall(n, currentComponent, fileStem, elements);
+    // emit/on/addEventListener
+    detectEventPatternInReact(n, currentComponent, fileStem, elements);
+
+    // Note: Service/utility function call tracking is handled by deepWalkForCallSites
+    // (called from analyzeComponentBody) to avoid duplicate functionCallRelationships entries.
+  }
+
+  // ── ExpressionStatement (top-level API endpoints) ──────────────────
+  if (nodeType === 'ExpressionStatement') {
+    const expr = n.expression as ASTNode | undefined;
+    if (expr) {
+      detectApiEndpointRegistration(expr, elements);
+      detectEventPatternInReact(expr, currentComponent, fileStem, elements);
+    }
+  }
+
+  // ── JSXElement (Suspense & ErrorBoundary detection) ────────────────
+  if (nodeType === 'JSXElement') {
+    const opening = n.openingElement as ASTNode | undefined;
+    const nameNode = opening?.name as ASTNode | undefined;
+    let compName: string | undefined;
+    if ((nameNode?.type as string) === 'JSXIdentifier') compName = nameNode?.name as string;
+    else if ((nameNode?.type as string) === 'JSXMemberExpression') compName = (nameNode?.property as ASTNode)?.name as string;
+
+    if (compName === 'Suspense') {
+      const location = sanitizeNodeId(`Suspense_${currentComponent || fileStem}`);
+      elements.suspenseBoundaries.add(location);
+      if (currentComponent) {
+        if (!elements.errorContainment.has(location)) elements.errorContainment.set(location, new Set());
+        elements.errorContainment.get(location)!.add(currentComponent);
+      }
+    }
+    if (compName && compName.toLowerCase().includes('errorboundary')) {
+      elements.errorBoundaries.add(sanitizeNodeId(compName));
+    }
+  }
+
+  // ── ClassDeclaration (error boundary detection) ────────────────────
+  if (nodeType === 'ClassDeclaration') {
+    const className = (n.id as ASTNode | undefined)?.name as string | undefined;
+    const classBody = n.body as ASTNode | undefined;
+    const bodyItems = classBody?.body as ASTNode[] | undefined;
+    if (className && bodyItems) {
+      const hasComponentDidCatch = bodyItems.some(m => ((m.key as ASTNode)?.name as string) === 'componentDidCatch');
+      const hasGetDerived = bodyItems.some(m => ((m.key as ASTNode)?.name as string) === 'getDerivedStateFromError');
+      if (hasComponentDidCatch || hasGetDerived) {
+        elements.errorBoundaries.add(sanitizeNodeId(className));
+        if (currentComponent && currentComponent !== className) {
+          if (!elements.errorContainment.has(sanitizeNodeId(className))) {
+            elements.errorContainment.set(sanitizeNodeId(className), new Set());
+          }
+          elements.errorContainment.get(sanitizeNodeId(className))!.add(currentComponent);
+        }
+      }
+    }
+  }
+
+  // ── TSInterface / TSTypeAlias ───────────────────────────────────────
+  if (nodeType === 'TSInterfaceDeclaration' || nodeType === 'TSTypeAliasDeclaration') {
+    const ifaceName = (n.id as ASTNode | undefined)?.name as string | undefined;
+    if (ifaceName) {
+      elements.sharedInterfaces.set(sanitizeNodeId(ifaceName), {
+        name: ifaceName,
+        filePath,
+        kind: nodeType === 'TSInterfaceDeclaration' ? 'interface' : 'type',
+      });
+      if (currentComponent) {
+        if (!elements.interfaceUsages.has(currentComponent)) {
+          elements.interfaceUsages.set(currentComponent, new Set());
+        }
+        elements.interfaceUsages.get(currentComponent)!.add(sanitizeNodeId(ifaceName));
+      }
+    }
+  }
+
+  // ── Import type detection (interface usage tracking) ────────────────
+  if (nodeType === 'ImportDeclaration') {
+    const specs = n.specifiers as ASTNode[] | undefined;
+    if (specs) {
+      for (const spec of specs) {
+        const importedName = (spec.imported as ASTNode | undefined)?.name as string | undefined
+          || (spec.local as ASTNode | undefined)?.name as string | undefined;
+        if (importedName && elements.sharedInterfaces.has(sanitizeNodeId(importedName))) {
+          if (currentComponent) {
+            if (!elements.interfaceUsages.has(currentComponent)) {
+              elements.interfaceUsages.set(currentComponent, new Set());
+            }
+            elements.interfaceUsages.get(currentComponent)!.add(sanitizeNodeId(importedName));
+          }
+        }
+      }
+    }
+  }
+
+  // ── Recurse into ALL child nodes (matching hoverchart's full walk) ──
+  for (const key of Object.keys(n)) {
+    if (AST_SKIP_KEYS.has(key)) continue;
+    const child = (n as Record<string, unknown>)[key];
+    if (Array.isArray(child)) {
+      for (const item of child) {
+        if (item && typeof item === 'object' && (item as Record<string, unknown>).type) {
+          deepReactWalk(
+            item, filePath, fileStem, fileContext, elements, foundItems,
+            nextComponent, nextParentIsComponent, fileImports, depth + 1
+          );
+        }
+      }
+    } else if (child && typeof child === 'object' && (child as Record<string, unknown>).type) {
+      deepReactWalk(
+        child, filePath, fileStem, fileContext, elements, foundItems,
+        nextComponent, nextParentIsComponent, fileImports, depth + 1
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -901,14 +1467,18 @@ function analyzeComponentBody(
             if (idType === 'Identifier') {
               const varName = id.name as string | undefined;
               if (varName) {
-                const prefixed = componentName.toLowerCase() +
-                  varName.charAt(0).toUpperCase() + varName.slice(1);
-                const label = getInternalFunctionLabel(varName, calleeName);
-                elements.componentInternalFunctions.push({
-                  componentName,
-                  functionName: prefixed,
-                  label,
-                });
+                const isEventHandler = /^(handle|on)[A-Z]/.test(varName);
+                const isTrivial = varName.length <= 2;
+                if (!isEventHandler && !isTrivial) {
+                  const prefixed = componentName.toLowerCase() +
+                    varName.charAt(0).toUpperCase() + varName.slice(1);
+                  const label = getInternalFunctionLabel(varName, calleeName);
+                  elements.componentInternalFunctions.push({
+                    componentName,
+                    functionName: prefixed,
+                    label,
+                  });
+                }
               }
             }
           } else if (calleeName.startsWith('use') && !REACT_BUILTIN_HOOKS.has(calleeName)) {
@@ -1015,28 +1585,36 @@ function analyzeComponentBody(
         ) {
           const varName = id.name as string | undefined;
           if (varName && !varName.startsWith('use')) {
-            const prefixed = componentName.toLowerCase() +
-              varName.charAt(0).toUpperCase() + varName.slice(1);
-            const label = getInternalFunctionLabel(varName, 'function');
-            elements.componentInternalFunctions.push({
-              componentName,
-              functionName: prefixed,
-              label,
-            });
+            const isEventHandler = /^(handle|on)[A-Z]/.test(varName);
+            const isTrivial = varName.length <= 2;
+            if (!isEventHandler && !isTrivial) {
+              const prefixed = componentName.toLowerCase() +
+                varName.charAt(0).toUpperCase() + varName.slice(1);
+              const label = getInternalFunctionLabel(varName, 'function');
+              elements.componentInternalFunctions.push({
+                componentName,
+                functionName: prefixed,
+                label,
+              });
+            }
           }
         }
       }
     } else if (stmtType === 'FunctionDeclaration') {
       const funcName = (stmt.id as ASTNode)?.name as string | undefined;
       if (funcName && !funcName.startsWith('use')) {
-        const prefixed = componentName.toLowerCase() +
-          funcName.charAt(0).toUpperCase() + funcName.slice(1);
-        const label = getInternalFunctionLabel(funcName, 'function');
-        elements.componentInternalFunctions.push({
-          componentName,
-          functionName: prefixed,
-          label,
-        });
+        const isEventHandler = /^(handle|on)[A-Z]/.test(funcName);
+        const isTrivial = funcName.length <= 2;
+        if (!isEventHandler && !isTrivial) {
+          const prefixed = componentName.toLowerCase() +
+            funcName.charAt(0).toUpperCase() + funcName.slice(1);
+          const label = getInternalFunctionLabel(funcName, 'function');
+          elements.componentInternalFunctions.push({
+            componentName,
+            functionName: prefixed,
+            label,
+          });
+        }
       }
     }
   }
@@ -1065,7 +1643,7 @@ function processReactDecl(
   if (dt === 'FunctionDeclaration' || dt === 'FunctionExpression') {
     const name = (decl.id as ASTNode | undefined)?.name as string | undefined;
     const body = decl.body as unknown;
-    if (name && containsJSX(body, fileContext as unknown as Record<string, unknown>)) {
+    if (name && /^[A-Z]/.test(name) && !name.startsWith('use') && fileContext.isComponent && containsJSX(body, fileContext as unknown as Record<string, unknown>)) {
       addToSet(name, foundItems.components, elements.components);
       analyzeComponentBody(name, body as ASTNode, elements);
     }
@@ -1082,23 +1660,24 @@ function processReactDecl(
 
         const initType = init.type as string;
 
+        const looksLikeComponent = /^[A-Z]/.test(name!) && !name!.startsWith('use');
         if (initType === 'ArrowFunctionExpression') {
           // const X = () => <JSX/>
           const arrowBody = init.body as unknown;
-          if (containsJSX(arrowBody, fileContext as unknown as Record<string, unknown>)) {
+          if (looksLikeComponent && fileContext.isComponent && containsJSX(arrowBody, fileContext as unknown as Record<string, unknown>)) {
             addToSet(name, foundItems.components, elements.components);
             analyzeComponentBody(name, arrowBody as ASTNode, elements);
           }
         } else if (initType === 'FunctionExpression') {
           // const X = function() { return <JSX/> }
           const body = init.body as unknown;
-          if (containsJSX(body, fileContext as unknown as Record<string, unknown>)) {
+          if (looksLikeComponent && fileContext.isComponent && containsJSX(body, fileContext as unknown as Record<string, unknown>)) {
             addToSet(name, foundItems.components, elements.components);
             analyzeComponentBody(name, body as ASTNode, elements);
           }
         } else if (initType === 'CallExpression') {
           // const X = memo(() => <JSX/>), const X = forwardRef(...), const X = memo(forwardRef(...))
-          if (containsJSX(init, fileContext as unknown as Record<string, unknown>)) {
+          if (looksLikeComponent && fileContext.isComponent && containsJSX(init, fileContext as unknown as Record<string, unknown>)) {
             addToSet(name, foundItems.components, elements.components);
             const innerFn = unwrapToFunction(init);
             if (innerFn) {
@@ -1115,10 +1694,15 @@ function processReactDecl(
   if (dt === 'ClassDeclaration') {
     const name = (decl.id as ASTNode | undefined)?.name as string | undefined;
     const superClass = decl.superClass as ASTNode | undefined;
-    if (name && superClass) {
+    if (name && superClass && fileContext.isComponent) {
       const superObjName = (superClass.object as ASTNode | undefined)?.name as string | undefined;
       const superPropName = (superClass.property as ASTNode | undefined)?.name as string | undefined;
-      if (superObjName === 'React' && (superPropName === 'Component' || superPropName === 'PureComponent')) {
+      const extendsReactComponent =
+        ((superClass.type as string) === 'Identifier' &&
+          ((superClass.name as string) === 'Component' || (superClass.name as string) === 'PureComponent')) ||
+        ((superClass.type as string) === 'MemberExpression' &&
+          superObjName === 'React' && (superPropName === 'Component' || superPropName === 'PureComponent'));
+      if (extendsReactComponent) {
         addToSet(name, foundItems.components, elements.components);
         // Check for error boundary methods: componentDidCatch / getDerivedStateFromError
         const classBody = decl.body as ASTNode | undefined;
@@ -1138,7 +1722,7 @@ function processReactDecl(
     return;
   }
 
-  if (dt === 'CallExpression') {
+  if (dt === 'CallExpression' && fileContext.isComponent) {
     const callee = decl.callee as ASTNode | undefined;
     const args = decl.arguments as ASTNode[] | undefined;
 
@@ -1159,7 +1743,7 @@ function processReactDecl(
       if (fnType === 'FunctionExpression' || fnType === 'ArrowFunctionExpression') {
         const name = (fn.id as ASTNode | undefined)?.name as string | undefined;
         const body = fn.body as unknown;
-        if (name && containsJSX(body, fileContext as unknown as Record<string, unknown>)) {
+        if (name && /^[A-Z]/.test(name) && containsJSX(body, fileContext as unknown as Record<string, unknown>)) {
           addToSet(name, foundItems.components, elements.components);
           analyzeComponentBody(name, body as ASTNode, elements);
         }
@@ -1170,7 +1754,7 @@ function processReactDecl(
           const innerFn = unwrapToFunction(fn);
           if (innerFn) {
             const innerName = (innerFn.id as ASTNode | undefined)?.name as string | undefined;
-            if (innerName) {
+            if (innerName && /^[A-Z]/.test(innerName)) {
               const body = innerFn.body as unknown;
               addToSet(innerName, foundItems.components, elements.components);
               if (body) analyzeComponentBody(innerName, body as ASTNode, elements);
@@ -1193,7 +1777,6 @@ export function traverseReactAST(
   // Snapshot to detect components and hooks added in this file
   const componentsBefore = new Set(foundItems.components);
   const hooksBefore = new Set(foundItems.hooks);
-  const relsBefore = elements.componentRelationships.length;
 
   // Base extraction via vanilla traversal
   traverseVanillaAST(ast, filePath, fileContext, elements, foundItems);
@@ -1203,10 +1786,63 @@ export function traverseReactAST(
   const body = (a.program as ASTNode | undefined)?.body as ASTNode[] | undefined;
   if (!body) return;
 
+  // Pre-scan imports to classify them by source folder (matching hoverchart's fileImports)
+  const fileImports: { stores: string[]; services: string[]; hooks: string[]; utilities: string[] } = {
+    stores: [], services: [], hooks: [], utilities: [],
+  };
+  for (const node of body) {
+    if ((node.type as string) === 'ImportDeclaration') {
+      const src = (node.source as ASTNode | undefined)?.value as string | undefined;
+      if (src && (src.startsWith('./') || src.startsWith('../'))) {
+        const specifiers = node.specifiers as ASTNode[] | undefined;
+        if (specifiers) {
+          for (const spec of specifiers) {
+            const importedName = (spec.imported as ASTNode | undefined)?.name as string | undefined
+              || (spec.local as ASTNode | undefined)?.name as string | undefined;
+            if (!importedName) continue;
+            if (src.includes('/stores/') || src.includes('/stores')) {
+              fileImports.stores.push(importedName);
+            } else if (src.includes('/services/') || src.includes('/services')) {
+              fileImports.services.push(importedName);
+            } else if (src.includes('/hooks/') || src.includes('/hooks')) {
+              fileImports.hooks.push(importedName);
+            } else if (src.includes('/utils/') || src.includes('/utils')
+                    || src.includes('/helpers/') || src.includes('/helpers')) {
+              fileImports.utilities.push(importedName);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Track default export for internal helper detection (matching hoverchart)
+  let defaultExportedName: string | null = null;
+
   for (const node of body) {
     const nodeType = node.type as string;
 
-    if (nodeType === 'ExportNamedDeclaration' || nodeType === 'ExportDefaultDeclaration') {
+    if (nodeType === 'ExportDefaultDeclaration') {
+      const decl = node.declaration as ASTNode | undefined;
+      if (decl) {
+        const declType = decl.type as string;
+        if (declType === 'Identifier') {
+          defaultExportedName = decl.name as string | undefined ?? null;
+        } else if ((declType === 'FunctionDeclaration' || declType === 'ClassDeclaration') && (decl.id as ASTNode | undefined)) {
+          defaultExportedName = (decl.id as ASTNode).name as string | undefined ?? null;
+        } else if (declType === 'CallExpression') {
+          // Handle React.memo(Component) or similar
+          const args = decl.arguments as ASTNode[] | undefined;
+          if (args && args.length > 0 && (args[0].type as string) === 'Identifier') {
+            defaultExportedName = args[0].name as string | undefined ?? null;
+          }
+        }
+        processReactDecl(decl, fileContext, elements, foundItems);
+      }
+      continue;
+    }
+
+    if (nodeType === 'ExportNamedDeclaration') {
       const decl = node.declaration as ASTNode | undefined;
       if (decl) processReactDecl(decl, fileContext, elements, foundItems);
       continue;
@@ -1228,7 +1864,7 @@ export function traverseReactAST(
             if (name && init?.type === 'CallExpression') {
               const callee = init.callee as ASTNode | undefined;
               const calleeName = callee?.name as string | undefined;
-              if (calleeName === 'create' || calleeName === 'createStore' || calleeName === 'defineStore') {
+              if (calleeName === 'create' || calleeName === 'createWithEqualityFn' || calleeName === 'createStore' || calleeName === 'defineStore') {
                 addToSet(name, foundItems.stores, elements.stores);
               }
             }
@@ -1241,28 +1877,82 @@ export function traverseReactAST(
     }
   }
 
-  // Detect internal helper components: components added in this file that
-  // appear in JSX relationships added in this file (both parent & child are new).
+  // Full recursive tree walk to capture non-top-level patterns (matching hoverchart's traverse).
+  // This finds: nested function declarations, API endpoints, DB models, auth guards,
+  // event patterns, Suspense/ErrorBoundary JSX, and more — all at any depth.
+  const fileStemForWalk = getFileStem(filePath);
+  deepReactWalk(
+    ast, filePath, fileStemForWalk, fileContext, elements, foundItems,
+    null, false, fileImports, 0
+  );
+
+  // Detect internal helper components using export-based approach (matching hoverchart).
+  // The exported component is the parent; all other components in the same file are helpers.
   const newComponents = [...foundItems.components].filter(c => !componentsBefore.has(c));
-  if (newComponents.length >= 2) {
-    const newCompSet = new Set(newComponents);
-    const newRels = elements.componentRelationships.slice(relsBefore);
-    const seenHelpers = new Set<string>();
-    for (const rel of newRels) {
-      if (
-        newCompSet.has(rel.parent) &&
-        newCompSet.has(rel.child) &&
-        rel.parent !== rel.child
-      ) {
-        const key = `${rel.parent}|${rel.child}`;
-        if (!seenHelpers.has(key)) {
-          seenHelpers.add(key);
-          elements.internalHelperComponents.push({
-            parent: rel.parent,
-            child: rel.child,
-            label: 'internal',
+  if (newComponents.length >= 2 && fileContext.isComponent) {
+    let parentComponent: string;
+    if (defaultExportedName && newComponents.includes(defaultExportedName)) {
+      parentComponent = defaultExportedName;
+    } else {
+      // No export found — use last component as parent (likely the main one)
+      parentComponent = newComponents[newComponents.length - 1];
+    }
+    const helperComponents = newComponents.filter(c => c !== parentComponent);
+    for (const helper of helperComponents) {
+      elements.internalHelperComponents.push({
+        parent: parentComponent,
+        child: helper,
+        label: 'internal',
+      });
+    }
+  }
+
+  // Associate file-level imports with newly detected components (matching hoverchart)
+  // hoverchart tracks imports from /stores/, /services/, /hooks/, /utils/ folders
+  // and creates componentDependency entries for each imported name.
+  if (newComponents.length > 0 && fileContext.isComponent) {
+    for (const comp of newComponents) {
+      for (const store of fileImports.stores) {
+        elements.componentDependencies.push({
+          component: comp,
+          target: store,
+          targetNodeId: store,
+          destructured: [],
+          label: 'uses store',
+        });
+      }
+      for (const service of fileImports.services) {
+        elements.componentDependencies.push({
+          component: comp,
+          target: service,
+          targetNodeId: service,
+          destructured: [],
+          label: 'uses service',
+        });
+      }
+      for (const hook of fileImports.hooks) {
+        // Only add if not already tracked by analyzeComponentBody
+        const alreadyTracked = elements.componentDependencies.some(
+          d => d.component === comp && d.target === hook
+        );
+        if (!alreadyTracked) {
+          elements.componentDependencies.push({
+            component: comp,
+            target: hook,
+            targetNodeId: hook,
+            destructured: [],
+            label: 'uses hook',
           });
         }
+      }
+      for (const util of fileImports.utilities) {
+        elements.componentDependencies.push({
+          component: comp,
+          target: util,
+          targetNodeId: util,
+          destructured: [],
+          label: 'uses utility',
+        });
       }
     }
   }

@@ -2,7 +2,7 @@ import type { WorkspaceFile, FileType } from '../types';
 import fs from 'fs/promises';
 import path from 'path';
 
-const EXCLUDED_DIRS = /^(node_modules|\.git|dist|build|coverage|examples?|demos?|tests?|__tests__|e2e|fixtures?|vendor|\.cache)$/i;
+const EXCLUDED_DIRS = /^(node_modules|\.git|dist|build|coverage|examples?|demos?|tests?|__tests__|e2e|fixtures?|vendor|\.cache|merfolk-plugin)$/i;
 
 function getFileType(filePath: string): FileType | null {
   if (filePath.endsWith('.py')) return 'python';
