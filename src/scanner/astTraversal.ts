@@ -112,6 +112,9 @@ function classifyName(
     } else {
       addToSet(name, foundItems.utilities, elements.utilities);
     }
+  } else if (fileContext.isComponent) {
+    // Top-level helper in a component file — treat as utility so it has a parent container
+    addToSet(name, foundItems.utilities, elements.utilities);
   } else {
     addToSet(name, foundItems.functions, elements.functions);
   }
@@ -730,9 +733,8 @@ function deepReactWalk(
         nextParentIsComponent = true;
       } else if (parentIsComponent && currentComponent && !alreadyCaptured) {
         // Inside a component body — component-internal function
-        const isEventHandler = /^(handle|on)[A-Z]/.test(funcName);
         const isTrivial = funcName.length <= 2;
-        if (!isEventHandler && !isTrivial && !funcName.startsWith('use')) {
+        if (!isTrivial && !funcName.startsWith('use')) {
           const prefixed = currentComponent.toLowerCase() +
             funcName.charAt(0).toUpperCase() + funcName.slice(1);
           const alreadyTracked = elements.componentInternalFunctions.some(
@@ -819,9 +821,8 @@ function deepReactWalk(
               nextParentIsComponent = true;
             } else if (parentIsComponent && currentComponent && !alreadyCaptured) {
               // Component-internal function
-              const isEventHandler = /^(handle|on)[A-Z]/.test(name);
               const isTrivial = name.length <= 2;
-              if (!isEventHandler && !isTrivial && !name.startsWith('use')) {
+              if (!isTrivial && !name.startsWith('use')) {
                 const prefixed = currentComponent.toLowerCase() +
                   name.charAt(0).toUpperCase() + name.slice(1);
                 const alreadyTracked = elements.componentInternalFunctions.some(
@@ -1467,9 +1468,8 @@ function analyzeComponentBody(
             if (idType === 'Identifier') {
               const varName = id.name as string | undefined;
               if (varName) {
-                const isEventHandler = /^(handle|on)[A-Z]/.test(varName);
                 const isTrivial = varName.length <= 2;
-                if (!isEventHandler && !isTrivial) {
+                if (!isTrivial) {
                   const prefixed = componentName.toLowerCase() +
                     varName.charAt(0).toUpperCase() + varName.slice(1);
                   const label = getInternalFunctionLabel(varName, calleeName);
@@ -1585,9 +1585,8 @@ function analyzeComponentBody(
         ) {
           const varName = id.name as string | undefined;
           if (varName && !varName.startsWith('use')) {
-            const isEventHandler = /^(handle|on)[A-Z]/.test(varName);
             const isTrivial = varName.length <= 2;
-            if (!isEventHandler && !isTrivial) {
+            if (!isTrivial) {
               const prefixed = componentName.toLowerCase() +
                 varName.charAt(0).toUpperCase() + varName.slice(1);
               const label = getInternalFunctionLabel(varName, 'function');
@@ -1603,9 +1602,8 @@ function analyzeComponentBody(
     } else if (stmtType === 'FunctionDeclaration') {
       const funcName = (stmt.id as ASTNode)?.name as string | undefined;
       if (funcName && !funcName.startsWith('use')) {
-        const isEventHandler = /^(handle|on)[A-Z]/.test(funcName);
         const isTrivial = funcName.length <= 2;
-        if (!isEventHandler && !isTrivial) {
+        if (!isTrivial) {
           const prefixed = componentName.toLowerCase() +
             funcName.charAt(0).toUpperCase() + funcName.slice(1);
           const label = getInternalFunctionLabel(funcName, 'function');

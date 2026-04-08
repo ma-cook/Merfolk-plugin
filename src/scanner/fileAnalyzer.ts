@@ -6,6 +6,8 @@ export function analyzeFile(filePath: string, repoType = 'react'): FileContext {
   const isComponent =
     /(?:^|\/)components\//.test(fp) ||
     /(?:^|\/)App\.(jsx?|tsx?)$/.test(fp) ||
+    /(?:^|\/)landing\//.test(fp) ||
+    /(?:^|\/)screens\//.test(fp) ||
     fp === 'App.jsx' ||
     fp === 'App.tsx';
   const isHook = /(?:^|\/)hooks\//.test(fp);
